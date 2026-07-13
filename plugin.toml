@@ -1,0 +1,56 @@
+[plugin]
+id = "writer_power_analysis"
+name = "作家战力分析"
+description = "输入作品文本，调用自定义模型，返回结构化评分报告。"
+short_description = "AI writer power analysis and scoring report for Chinese creative writing."
+keywords = [
+    "作家",
+    "写作",
+    "文本分析",
+    "战力分析",
+    "评分",
+    "Ink Battles",
+    "writer",
+    "analysis",
+]
+version = "0.1.0"
+entry = "plugin.plugins.writer_power_analysis:WriterPowerAnalysisPlugin"
+
+[plugin.author]
+name = "ZhaiJiu"
+
+[plugin.sdk]
+recommended = ">=0.1.0,<0.2.0"
+supported = ">=0.1.0,<0.3.0"
+
+[plugin.ui]
+enabled = true
+
+[[plugin.ui.panel]]
+id = "main"
+title = "作家战力分析"
+entry = "static/index.html"
+context = "writer_power_analysis"
+permissions = [
+    "state:read",
+    "action:call",
+]
+
+[plugin_runtime]
+enabled = true
+auto_start = false
+
+[plugin.store]
+enabled = true
+
+[writer_power_analysis]
+# 留空则使用前端面板中配置的值；也可在此预设默认值
+base_url = ""
+api_key = ""
+model_list_path = ""
+default_model = ""
+fallback_models = []
+timeout_seconds = 120
+max_article_chars = 400000
+temperature = 0.35
+json_mode = true

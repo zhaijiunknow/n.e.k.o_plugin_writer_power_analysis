@@ -1,0 +1,344 @@
+"""Writer power analysis plugin for N.E.K.O."""
+
+from __future__ import annotations
+
+from typing import Any
+
+from plugin.sdk.plugin import (
+    Err,
+    NekoPluginBase,
+    Ok,
+    PluginSettings,
+    SdkError,
+    SettingsField,
+    lifecycle,
+    neko_plugin,
+    plugin_entry,
+    ui,
+)
+
+from .analysis_nodes import (
+    DEFAULT_BASE_URL,
+    DEFAULT_FALLBACK_MODELS,
+    DEFAULT_MAX_ARTICLE_CHARS,
+    DEFAULT_MODEL,
+    DEFAULT_MODEL_LIST_PATH,
+    DEFAULT_TEMPERATURE,
+    DEFAULT_TIMEOUT_SECONDS,
+    WriterAnalysisError,
+    WriterPowerAnalysisService,
+)
+from .platform_store import PlatformPresetStore
+from .task_queue import AnalysisTaskQueue
+
+
+def _emit_node_log(logger: Any, event: str, node: str, **metadata: Any) -> None:
+    """Write a lifecycle node log without leaking sensitive values."""
+
+    parts = []
+    for key, value in metadata.items():
+        if value is None:
+            continue
+        if any(marker in key.lower() for marker in ("api_key", "token", "secret", "authorization")):
+            value = "<redacted>"
+        parts.append(f"{key}={value}")
+    suffix = " ".join(parts)
+    message = f"[writer_power_analysis] {event} name={node}"
+    if suffix:
+        message = f"{message} {suffix}"
+    try:
+        logger.info(message)
+    except Exception:
+        return
+
+
+@neko_plugin
+class WriterPowerAnalysisPlugin(NekoPluginBase):
+    """Ink Battles writer power analysis as a N.E.K.O plugin."""
+
+    class Settings(PluginSettings):
+        """Plugin configuration exposed through N.E.K.O config."""
+
+        model_config = {"toml_section": "writer_power_analysis"}
+
+        base_url: str = SettingsField(DEFAULT_BASE_URL, hot=True, description="OpenAI-compatible base URL")
+        api_key: str = SettingsField("", hot=True, description="API key; leave empty and pass per call if preferred")
+        model_list_path: str = SettingsField(DEFAULT_MODEL_LIST_PATH, hot=True, description="Model list path or absolute URL")
+        default_model: str = SettingsField(DEFAULT_MODEL, hot=True, description="Default model id")
+        fallback_models: list[str] = SettingsField(
+            list(DEFAULT_FALLBACK_MODELS),
+            hot=True,
+            description="Fallback model ids when the selected model is unavailable",
+        )
+        timeout_seconds: float = SettingsField(DEFAULT_TIMEOUT_SECONDS, hot=True, ge=5, le=300, description="Upstream request timeout")
+        max_article_chars: int = SettingsField(DEFAULT_MAX_ARTICLE_CHARS, hot=True, ge=1000, le=1_000_000, description="Max input characters")
+        temperature: float = SettingsField(DEFAULT_TEMPERATURE, hot=True, ge=0, le=2, description="Model temperature")
+        json_mode: bool = SettingsField(True, hot=True, description="Send OpenAI response_format=json_object when possible")
+
+    def __init__(self, ctx: Any):
+        super().__init__(ctx)
+        self.logger = ctx.logger
+        self._cfg: dict[str, Any] = {}
+        self._service = WriterPowerAnalysisService(self.logger)
+        self._preset_store = PlatformPresetStore(self.data_path())
+        self._task_queue = AnalysisTaskQueue(self.logger)
+        self.register_static_ui("static", cache_control="no-cache")
+
+    @lifecycle(id="startup")
+    async def startup(self, **_):
+        """Load config when the plugin starts."""
+
+        await self._reload_config()
+        status = self._service.status(self._cfg)
+        self.logger.info(
+            "WriterPowerAnalysisPlugin ready: base_url={}, default_model={}, has_api_key={}",
+            status["base_url"],
+            status["default_model"],
+            status["has_api_key"],
+        )
+        return Ok({"status": "ready", "default_model": status["default_model"]})
+
+    @lifecycle(id="shutdown")
+    async def shutdown(self, **_):
+        """Cancel pending tasks and report graceful shutdown."""
+
+        _emit_node_log(self.logger, "node.enter", "plugin.shutdown")
+        await self._task_queue.shutdown()
+        _emit_node_log(self.logger, "node.exit", "plugin.shutdown", status="ok")
+        return Ok({"status": "stopped"})
+
+    @lifecycle(id="config_change")
+    async def on_config_change(self, **_):
+        """Hot-reload plugin config."""
+
+        await self._reload_config()
+        return Ok({"status": "reloaded"})
+
+    @ui.context(id="writer_power_analysis", title="作家战力分析")
+    async def get_dashboard_ui_context(self) -> dict[str, Any]:
+        """Provide panel state."""
+        status = self._service.status(self._cfg)
+        return {
+            "status": status.get("status", "unknown"),
+            "default_model": status.get("default_model", ""),
+            "base_url": status.get("base_url", ""),
+            "model_list_path": status.get("model_list_url", ""),
+            "has_api_key": status.get("has_api_key", False),
+        }
+
+    async def _reload_config(self) -> None:
+        """Read this plugin's TOML section."""
+
+        _emit_node_log(self.logger, "node.enter", "config.reload")
+        try:
+            cfg = await self.config.dump(timeout=5.0)
+            cfg = cfg if isinstance(cfg, dict) else {}
+            section = cfg.get("writer_power_analysis")
+            self._cfg = section if isinstance(section, dict) else {}
+        except Exception as exc:
+            _emit_node_log(self.logger, "node.exit", "config.reload", status="error", error_type=type(exc).__name__, error=exc)
+            raise
+        _emit_node_log(self.logger, "node.exit", "config.reload", status="ok", keys=len(self._cfg))
+
+    @ui.action(id="status", label="刷新状态", group="info", order=10, refresh_context=True)
+    @plugin_entry(
+        id="status",
+        name="作家战力分析状态",
+        description="查看作家战力分析插件配置状态。不会返回 API key。",
+        llm_result_fields=["status", "base_url", "default_model", "has_api_key"],
+    )
+    async def status(self, **kwargs):
+        """Return non-secret plugin status."""
+
+        try:
+            return Ok(self._service.status(self._cfg, **kwargs))
+        except Exception as exc:
+            self.logger.warning("Writer analysis status node failed: {}", type(exc).__name__)
+            return Err(SdkError(f"读取状态失败: {exc}"))
+
+    @ui.action(id="list_models", label="刷新模型列表", group="model", order=20, refresh_context=True)
+    @plugin_entry(
+        id="list_models",
+        name="获取作家分析模型列表",
+        description="从配置的模型接口获取可用模型列表；未配置 API key 时返回内置候选列表。",
+        input_schema={
+            "type": "object",
+            "properties": {
+                "api_key": {"type": "string", "description": "临时 API key，优先于插件配置"},
+                "base_url": {"type": "string", "description": "临时 base URL"},
+                "model_list_path": {"type": "string", "description": "模型列表路径，默认 /v1/models"},
+            },
+        },
+        llm_result_fields=["models", "count", "source"],
+        timeout=30.0,
+    )
+    async def list_models(self, **kwargs):
+        """Fetch available model ids from the configured model-list endpoint."""
+
+        try:
+            return Ok(await self._service.list_models(self._cfg, **kwargs))
+        except WriterAnalysisError as exc:
+            return Err(SdkError(str(exc)))
+        except Exception as exc:
+            self.logger.warning("Writer analysis list_models failed: {}", type(exc).__name__)
+            return Err(SdkError(f"获取模型列表失败: {type(exc).__name__}: {exc}"))
+
+    @ui.action(id="get_neko_model", label="获取 Neko 模型信息", group="model", order=30, refresh_context=True)
+    @plugin_entry(
+        id="get_neko_model",
+        name="获取 Neko 当前模型",
+        description="返回 N.E.K.O 当前使用的对话模型信息，用于前端「使用 Neko 当前模型」选项。",
+        llm_result_fields=["available", "model", "base_url", "has_api_key"],
+        timeout=10.0,
+    )
+    async def get_neko_model(self, **_):
+        """Return Neko's current conversation model configuration."""
+
+        try:
+            return Ok(self._service.get_neko_model())
+        except Exception as exc:
+            return Err(SdkError(f"获取 Neko 模型信息失败: {exc}"))
+
+    @ui.action(id="load_platform_presets", label="加载平台预设", group="config", order=40, refresh_context=True)
+    @plugin_entry(
+        id="load_platform_presets",
+        name="加载平台预设",
+        description="从磁盘 JSON 文件加载所有已保存的平台预设。",
+        llm_result_fields=["presets"],
+        timeout=5.0,
+    )
+    async def load_platform_presets(self, **_):
+        try:
+            presets = await self._preset_store.load_all()
+            return Ok({"presets": presets})
+        except Exception as exc:
+            return Err(SdkError(f"加载预设失败: {exc}"))
+
+    @ui.action(id="save_platform_preset", label="保存平台预设", group="config", order=50, refresh_context=True)
+    @plugin_entry(
+        id="save_platform_preset",
+        name="保存平台预设",
+        description="保存一个平台预设到磁盘 JSON 文件。apiKey 会加密存储在本地。",
+        input_schema={
+            "type": "object",
+            "properties": {
+                "id": {"type": "string"},
+                "label": {"type": "string"},
+                "baseUrl": {"type": "string"},
+                "modelListPath": {"type": "string"},
+                "model": {"type": "string"},
+                "apiKey": {"type": "string", "description": "API key，会随预设一起保存"},
+            },
+            "required": ["id", "baseUrl"],
+        },
+        llm_result_fields=["presets"],
+        timeout=5.0,
+    )
+    async def save_platform_preset(self, **kwargs):
+        try:
+            presets = await self._preset_store.save(dict(kwargs))
+            return Ok({"presets": presets})
+        except Exception as exc:
+            return Err(SdkError(f"保存预设失败: {exc}"))
+
+    @ui.action(id="delete_platform_preset", label="删除平台预设", group="config", order=60, refresh_context=True)
+    @plugin_entry(
+        id="delete_platform_preset",
+        name="删除平台预设",
+        description="按 id 删除一个已保存的平台预设。",
+        input_schema={
+            "type": "object",
+            "properties": {
+                "preset_id": {"type": "string", "description": "要删除的预设 id"},
+            },
+            "required": ["preset_id"],
+        },
+        llm_result_fields=["presets"],
+        timeout=5.0,
+    )
+    async def delete_platform_preset(self, preset_id: str = "", **_):
+        try:
+            presets = await self._preset_store.delete(preset_id)
+            return Ok({"presets": presets})
+        except Exception as exc:
+            return Err(SdkError(f"删除预设失败: {exc}"))
+
+    @ui.action(id="analyze_text", label="开始战力分析", icon="🔍", group="analyze", order=10, refresh_context=True)
+    @plugin_entry(
+        id="analyze_text",
+        name="作家战力分析",
+        description="提交作品正文到后台分析队列，立即返回 task_id，前端轮询 get_analysis_status 获取结果。",
+        input_schema={
+            "type": "object",
+            "properties": {
+                "article_text": {"type": "string", "description": "要分析的作品正文"},
+                "mode": {
+                    "type": "string",
+                    "description": "评分模式，例如 standard、strict、reader、judge、fan、fragment",
+                    "default": "standard",
+                },
+                "model": {"type": "string", "description": "模型 id；留空使用配置 default_model"},
+                "api_key": {"type": "string", "description": "临时 API key，优先于插件配置"},
+                "base_url": {"type": "string", "description": "临时 base URL"},
+                "use_neko_model": {"type": "boolean", "description": "使用 Neko 当前对话模型而非插件独立配置", "default": False},
+            },
+            "required": ["article_text"],
+        },
+        llm_result_fields=["task_id", "status"],
+        timeout=10.0,
+    )
+    async def analyze_text(
+        self,
+        article_text: str,
+        mode: str = "standard",
+        model: str = "",
+        api_key: str = "",
+        base_url: str = "",
+        use_neko_model: bool = False,
+        **_,
+    ):
+        """Queue an analysis task, return task_id immediately."""
+
+        async def _runner() -> dict[str, Any]:
+            return await self._service.analyze(
+                self._cfg,
+                article_text=article_text,
+                mode=mode,
+                model=model,
+                api_key=api_key,
+                base_url=base_url,
+                use_neko_model=use_neko_model,
+            )
+
+        try:
+            task_id = await self._task_queue.submit(
+                runner=_runner,
+                model=model or ("neko" if use_neko_model else "custom"),
+                mode=mode,
+                article_chars=len(article_text),
+            )
+            return Ok({"task_id": task_id, "status": "queued"})
+        except Exception as exc:
+            return Err(SdkError(f"提交分析任务失败: {exc}"))
+
+    @ui.action(id="get_analysis_status", label="查询分析状态", group="analyze", order=20, refresh_context=True)
+    @plugin_entry(
+        id="get_analysis_status",
+        name="查询分析状态",
+        description="按 task_id 查询后台分析任务的状态和结果。status: queued | running | done | error。",
+        input_schema={
+            "type": "object",
+            "properties": {
+                "task_id": {"type": "string", "description": "analyze_text 返回的 task_id"},
+            },
+            "required": ["task_id"],
+        },
+        llm_result_fields=["task_id", "status", "result", "error"],
+        timeout=5.0,
+    )
+    async def get_analysis_status(self, task_id: str = "", **_):
+        """Poll for analysis task status / result."""
+        task = await self._task_queue.get(task_id)
+        if task is None:
+            return Err(SdkError(f"未找到任务: {task_id}"))
+        return Ok(task)
