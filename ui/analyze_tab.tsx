@@ -15,7 +15,7 @@ import {
   Textarea,
   Tip,
 } from "@neko/plugin-ui"
-import type { TabSharedProps } from "./types"
+import type { AuthorStyleTerm, TabSharedProps } from "./types"
 
 function compactName(name: string | undefined): string {
   return String(name || "未命名").replace(/^[^\u4e00-\u9fa5A-Za-z0-9]+/, "").replace(/（.*?）/g, "").slice(0, 8)
@@ -24,6 +24,23 @@ function compactName(name: string | undefined): string {
 function joinTextList(items: string[] | undefined, fallback = "-"): string {
   const values = Array.isArray(items) ? items.map((item) => String(item || "").trim()).filter(Boolean) : []
   return values.length > 0 ? values.join(" / ") : fallback
+}
+
+function joinTermList(items: AuthorStyleTerm[] | undefined, fallback = "-"): string {
+  const values = Array.isArray(items)
+    ? items.map((item) => item.count > 1 ? `${item.text} ×${item.count}` : item.text).filter(Boolean)
+    : []
+  return values.length > 0 ? values.join(" / ") : fallback
+}
+
+function DetailList({ label, items, fallback = "-" }: { label: string; items?: string[]; fallback?: string }) {
+  const values = Array.isArray(items) ? items.map((item) => String(item || "").trim()).filter(Boolean) : []
+  return (
+    <Stack>
+      <Text>{label}：</Text>
+      {values.length > 0 ? values.map((item, index) => <Text key={`${label}-${index}`}>- {item}</Text>) : <Text>{fallback}</Text>}
+    </Stack>
+  )
 }
 
 export function AnalyzeTab(p: TabSharedProps) {
@@ -142,15 +159,16 @@ export function AnalyzeTab(p: TabSharedProps) {
               <Stack>
                 {styleProfile ? (
                   <>
-                    <Text>{`${styleProfile.styleLabel || "未命名文风"} · ${styleProfile.genreType || "体裁未标注"}`}</Text>
+                    <Text>{styleProfile.styleLabel || "未命名文风"}</Text>
                     {styleProfile.summary ? <Text>{styleProfile.summary}</Text> : null}
                     <Grid cols={2}>
+                      <Text>体裁/类型：{styleProfile.genreType || "-"}</Text>
                       <Text>故事内容：{styleProfile.storyContent || "-"}</Text>
                       <Text>核心表达：{styleProfile.coreExpression || "-"}</Text>
                       <Text>表达节奏：{styleProfile.expressionRhythm || "-"}</Text>
-                      <Text>语言习惯：{joinTextList(styleProfile.languageHabits)}</Text>
-                      <Text>句式结构：{joinTextList(styleProfile.sentenceStructures)}</Text>
-                      <Text>意象偏好：{joinTextList(styleProfile.imageryPreferences)}</Text>
+                      <DetailList label="语言习惯" items={styleProfile.languageHabits} />
+                      <DetailList label="句式结构" items={styleProfile.sentenceStructures} />
+                      <DetailList label="意象偏好" items={styleProfile.imageryPreferences} />
                     </Grid>
                     <Text>关键词：{joinTextList(styleProfile.keywords || p.analysis.tags)}</Text>
                   </>
@@ -172,6 +190,38 @@ export function AnalyzeTab(p: TabSharedProps) {
                 {(p.analysis.tags || []).length > 0 ? <Text>标签：{(p.analysis.tags || []).join(" / ")}</Text> : null}
               </Stack>
             </Card>
+            {p.authorStyleProfile ? (
+              <Card title="作者文风画像">
+                <Stack>
+                  <StatusBadge tone={p.authorStyleProfile.source === "model" ? "success" : "warning"}>
+                    {p.authorStyleSynthesizing ? "模型统合中" : p.authorStyleProfile.source === "model" ? "模型统合" : "本地统计兜底"}
+                  </StatusBadge>
+                  {p.authorStyleSynthesisError ? <Alert tone="warning">模型统合失败，当前显示本地统计：{p.authorStyleSynthesisError}</Alert> : null}
+                  <Grid cols={3}>
+                    <StatCard label="历史样本" value={`${p.authorStyleProfile.sampleCount} 篇`} />
+                    <StatCard label="稳定风格" value={p.authorStyleProfile.dominantStyle} />
+                    <StatCard label="常写题材" value={p.authorStyleProfile.dominantGenre} />
+                  </Grid>
+                  {p.authorStyleProfile.summary ? <Text>{p.authorStyleProfile.summary}</Text> : null}
+                  <Grid cols={2}>
+                    <Text>稳定风格标签：{joinTermList(p.authorStyleProfile.styleLabels)}</Text>
+                    <Text>常写题材类型：{joinTermList(p.authorStyleProfile.genres)}</Text>
+                    <Text>语言习惯：{joinTermList(p.authorStyleProfile.languageHabits)}</Text>
+                    <Text>句式结构：{joinTermList(p.authorStyleProfile.sentenceStructures)}</Text>
+                    <Text>意象偏好：{joinTermList(p.authorStyleProfile.imageryPreferences)}</Text>
+                    <Text>关键词网络：{joinTermList(p.authorStyleProfile.keywords)}</Text>
+                    <Text>常见表达节奏：{joinTermList(p.authorStyleProfile.rhythms)}</Text>
+                    <Text>核心表达倾向：{joinTermList(p.authorStyleProfile.coreExpressions)}</Text>
+                    <Text>主题偏好：{joinTextList(p.authorStyleProfile.topicPreferences)}</Text>
+                    <Text>叙事倾向：{joinTextList(p.authorStyleProfile.narrativeTendencies)}</Text>
+                    <Text>稳定优势：{joinTextList(p.authorStyleProfile.strengths)}</Text>
+                    <Text>惯性风险：{joinTextList(p.authorStyleProfile.risks)}</Text>
+                    <Text>升级方向：{joinTextList(p.authorStyleProfile.evolutionAdvice)}</Text>
+                    <Text>置信度：{typeof p.authorStyleProfile.confidence === "number" ? `${Math.round(p.authorStyleProfile.confidence * 100)}%` : "-"}</Text>
+                  </Grid>
+                </Stack>
+              </Card>
+            ) : null}
             {(p.analysis.mermaid_diagrams || []).length > 0 ? (
               <Grid cols={2}>
                 {(p.analysis.mermaid_diagrams || []).slice(0, 3).map((diagram, i) => (

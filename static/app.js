@@ -225,25 +225,195 @@ function renderListChips(items, emptyText) {
   return `<div class="tag-row">${list.map(item => `<span class="tag">${esc(item)}</span>`).join('')}</div>`;
 }
 
+function renderProfileDetails(items, emptyText) {
+  const list = listItems(items, 8);
+  if (!list.length) return `<span class="muted">${esc(emptyText || '暂无')}</span>`;
+  return `<ul class="style-detail-list">${list.map(item => `<li>${esc(item)}</li>`).join('')}</ul>`;
+}
+
 function renderArticleStyleProfile(profile, fallbackTags) {
   const keywords = listItems(profile.keywords, 12);
   const tags = keywords.length ? keywords : listItems(fallbackTags, 12);
   return `<div class="portrait-summary portrait-profile">
     <div class="style-profile-head">
       <span class="style-label">${esc(profile.styleLabel || '未命名文风')}</span>
-      <span class="style-genre">${esc(profile.genreType || '体裁未标注')}</span>
+      <span class="style-genre">当前作品画像</span>
     </div>
     ${profile.summary ? `<p>${esc(profile.summary)}</p>` : ''}
     <div class="style-profile-grid">
+      <div><b>体裁/类型</b><span>${esc(profile.genreType || '-')}</span></div>
       <div><b>故事内容</b><span>${esc(profile.storyContent || '-')}</span></div>
       <div><b>核心表达</b><span>${esc(profile.coreExpression || '-')}</span></div>
       <div><b>表达节奏</b><span>${esc(profile.expressionRhythm || '-')}</span></div>
-      <div><b>语言习惯</b>${renderListChips(profile.languageHabits, '暂无语言习惯')}</div>
-      <div><b>句式结构</b>${renderListChips(profile.sentenceStructures, '暂无句式结构')}</div>
-      <div><b>意象偏好</b>${renderListChips(profile.imageryPreferences, '暂无意象偏好')}</div>
+      <div><b>语言习惯</b>${renderProfileDetails(profile.languageHabits, '暂无语言习惯')}</div>
+      <div><b>句式结构</b>${renderProfileDetails(profile.sentenceStructures, '暂无句式结构')}</div>
+      <div><b>意象偏好</b>${renderProfileDetails(profile.imageryPreferences, '暂无意象偏好')}</div>
     </div>
     ${tags.length ? `<div class="style-keywords">${renderListChips(tags, '暂无关键词')}</div>` : ''}
   </div>`;
+}
+
+function collectAuthorStyleProfiles(extraProfile) {
+  const history = LS.get('history', []);
+  const profiles = [];
+  const seen = new Set();
+  const profileKey = (profile) => [
+    profile.styleLabel,
+    profile.genreType,
+    profile.summary,
+    profile.storyContent,
+    profile.coreExpression,
+    listItems(profile.keywords, 6).join('|')
+  ].join('::');
+  const addProfile = (profile) => {
+    if (!hasArticleStyleProfile(profile)) return;
+    const finalKey = profileKey(profile);
+    if (seen.has(finalKey)) return;
+    seen.add(finalKey);
+    profiles.push(profile);
+  };
+  if (Array.isArray(history)) {
+    history.forEach(entry => addProfile(entry?.analysis?.articleStyleProfile));
+  }
+  addProfile(extraProfile);
+  return profiles;
+}
+
+function countTerms(items, maxItems = 10) {
+  const counts = new Map();
+  const firstSeen = new Map();
+  let order = 0;
+  (items || []).forEach(item => {
+    const text = String(item || '').trim();
+    if (!text || text === '-') return;
+    if (!firstSeen.has(text)) firstSeen.set(text, order++);
+    counts.set(text, (counts.get(text) || 0) + 1);
+  });
+  return [...counts.entries()]
+    .sort((a, b) => b[1] - a[1] || firstSeen.get(a[0]) - firstSeen.get(b[0]))
+    .slice(0, maxItems)
+    .map(([text, count]) => ({ text, count }));
+}
+
+function collectProfileField(profiles, field) {
+  return profiles.flatMap(profile => listItems(profile?.[field], 12));
+}
+
+function collectTextField(profiles, field) {
+  return profiles.map(profile => String(profile?.[field] || '').trim()).filter(Boolean);
+}
+
+function buildAuthorStyleProfile(currentProfile) {
+  const profiles = collectAuthorStyleProfiles(currentProfile);
+  if (!profiles.length) return null;
+  const styleLabels = countTerms(collectTextField(profiles, 'styleLabel'), 6);
+  const genres = countTerms(collectTextField(profiles, 'genreType'), 6);
+  const languageHabits = countTerms(collectProfileField(profiles, 'languageHabits'), 10);
+  const sentenceStructures = countTerms(collectProfileField(profiles, 'sentenceStructures'), 10);
+  const imageryPreferences = countTerms(collectProfileField(profiles, 'imageryPreferences'), 10);
+  const keywords = countTerms(collectProfileField(profiles, 'keywords'), 12);
+  const rhythms = countTerms(collectTextField(profiles, 'expressionRhythm'), 5);
+  const coreExpressions = countTerms(collectTextField(profiles, 'coreExpression'), 5);
+  const dominantStyle = styleLabels[0]?.text || '尚未形成稳定标签';
+  const dominantGenre = genres[0]?.text || '题材样本不足';
+  return {
+    sampleCount: profiles.length,
+    source: 'local',
+    dominantStyle,
+    dominantGenre,
+    styleLabels,
+    genres,
+    languageHabits,
+    sentenceStructures,
+    imageryPreferences,
+    keywords,
+    rhythms,
+    coreExpressions,
+  };
+}
+
+function authorStyleSignatureFromProfiles(profiles) {
+  return (profiles || []).map(profile => [
+    profile.styleLabel,
+    profile.genreType,
+    profile.summary,
+    profile.storyContent,
+    profile.coreExpression,
+    listItems(profile.keywords, 8).join('|')
+  ].join('::')).join('##');
+}
+
+function renderTermChips(terms, emptyText) {
+  const list = Array.isArray(terms) ? terms.filter(item => item && item.text) : [];
+  if (!list.length) return `<span class="muted">${esc(emptyText || '暂无')}</span>`;
+  return `<div class="tag-row">${list.map(item => {
+    const label = item.count > 1 ? `${item.text} ×${item.count}` : item.text;
+    return `<span class="tag">${esc(label)}</span>`;
+  }).join('')}</div>`;
+}
+
+function renderAuthorStyleProfile(currentProfile) {
+  const profile = buildAuthorStyleProfile(currentProfile);
+  if (!profile) return '';
+  return renderAuthorStyleProfileData(profile);
+}
+
+function renderAuthorStyleProfileData(profile, statusText = '') {
+  if (!profile) return '';
+  const sourceLabel = statusText || (profile.source === 'model' ? '模型统合' : '本地统计兜底');
+  return `<div class="author-profile">
+    <div class="author-profile-head">
+      <div>
+        <div class="section-title">作者文风画像</div>
+        <p>基于 ${profile.sampleCount} 篇历史作品画像统合，提炼稳定出现的语言、句式、意象和命题倾向。</p>
+      </div>
+      <span class="style-genre">${esc(sourceLabel)} · ${esc(profile.sampleCount)} 篇样本</span>
+    </div>
+    <div class="style-profile-head">
+      <span class="style-label">${esc(profile.dominantStyle)}</span>
+      <span class="style-genre">${esc(profile.dominantGenre)}</span>
+    </div>
+    ${profile.summary ? `<p>${esc(profile.summary)}</p>` : ''}
+    <div class="author-profile-grid">
+      <div><b>稳定风格标签</b>${renderTermChips(profile.styleLabels, '暂无稳定标签')}</div>
+      <div><b>常写题材类型</b>${renderTermChips(profile.genres, '暂无题材样本')}</div>
+      <div><b>语言习惯</b>${renderTermChips(profile.languageHabits, '暂无语言习惯')}</div>
+      <div><b>句式结构</b>${renderTermChips(profile.sentenceStructures, '暂无句式结构')}</div>
+      <div><b>意象偏好</b>${renderTermChips(profile.imageryPreferences, '暂无意象偏好')}</div>
+      <div><b>关键词网络</b>${renderTermChips(profile.keywords, '暂无关键词')}</div>
+      <div><b>主题偏好</b>${renderListChips(profile.topicPreferences, '暂无主题偏好')}</div>
+      <div><b>叙事倾向</b>${renderListChips(profile.narrativeTendencies, '暂无叙事倾向')}</div>
+      <div><b>稳定优势</b>${renderListChips(profile.strengths, '暂无稳定优势')}</div>
+      <div><b>惯性风险</b>${renderListChips(profile.risks, '暂无惯性风险')}</div>
+      <div><b>升级方向</b>${renderListChips(profile.evolutionAdvice, '暂无升级方向')}</div>
+      <div><b>置信度</b><span>${typeof profile.confidence === 'number' ? `${Math.round(profile.confidence * 100)}%` : '-'}</span></div>
+    </div>
+    ${profile.rhythms.length ? `<div class="author-profile-note"><b>常见表达节奏</b><span>${esc(profile.rhythms.map(item => item.text).join(' / '))}</span></div>` : ''}
+    ${profile.coreExpressions.length ? `<div class="author-profile-note"><b>核心表达倾向</b><span>${esc(profile.coreExpressions.map(item => item.text).join(' / '))}</span></div>` : ''}
+  </div>`;
+}
+
+function renderAuthorStyleProfileShell(profileHtml) {
+  return `<div id="authorStyleProfileBox">${profileHtml}</div>`;
+}
+
+async function synthesizeAuthorStyleProfile(currentProfile, requestOptions = {}) {
+  const profiles = collectAuthorStyleProfiles(currentProfile);
+  if (!profiles.length) return null;
+  const signature = authorStyleSignatureFromProfiles(profiles);
+  const cached = LS.get('modelAuthorStyleProfile', null);
+  if (cached && cached.signature === signature && cached.profile) return cached.profile;
+  const profile = await callPlugin('synthesize_author_style_profile', {
+    profiles,
+    model: requestOptions.model || '',
+    api_key: requestOptions.api_key || '',
+    base_url: requestOptions.base_url || '',
+    model_list_path: requestOptions.model_list_path || '/v1/models',
+    use_neko_model: Boolean(requestOptions.use_neko_model),
+  }, requestOptions.timeoutMs || 120000);
+  const normalized = { ...profile, source: profile?.source || 'model' };
+  LS.set('modelAuthorStyleProfile', { signature, profile: normalized });
+  return normalized;
 }
 
 function renderStylePortrait(analysis) {
@@ -426,9 +596,11 @@ function renderDiagramSection(analysis, kind) {
 
 function renderVisualReport(analysis) {
   if (!analysis || typeof analysis !== 'object') return '';
+  const authorProfile = renderAuthorStyleProfileShell(renderAuthorStyleProfile(analysis.articleStyleProfile));
   return `<div class="detail-section">
     <h3>可视化报告</h3>
     ${renderStylePortrait(analysis)}
+    ${authorProfile}
   </div>
   ${renderDiagramSection(analysis, 'structure')}
   ${renderDiagramSection(analysis, 'theme')}`;

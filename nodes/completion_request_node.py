@@ -6,7 +6,7 @@ from typing import Any
 
 import httpx
 
-from .models import AnalysisConfig, UpstreamResponse, WriterAnalysisError
+from .models import AnalysisConfig, RetryableModelError, UpstreamResponse, WriterAnalysisError
 from .node_logging import LoggedNode
 from .utils import build_endpoint_candidates, to_gemini_payload
 
@@ -67,6 +67,12 @@ class CompletionRequestNode(LoggedNode):
                 self._end(started, model=model, endpoint=last_endpoint, status_code=last_response.status_code)
                 return result
             raise WriterAnalysisError("模型接口地址配置无效")
+        except httpx.TimeoutException as exc:
+            self._fail(started, exc, model=model)
+            raise RetryableModelError(
+                f"模型请求超时（{cfg.timeout_seconds:.0f} 秒）：{model} 未在限定时间内返回结果。"
+                "长文本分析可能需要更长时间，请换更快的模型、缩短原文，或提高 writer_power_analysis.timeout_seconds。"
+            ) from exc
         except Exception as exc:
             self._fail(started, exc, model=model)
             raise

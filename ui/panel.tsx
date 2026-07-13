@@ -24,6 +24,9 @@ import type {
   TabSharedProps,
   WriterModel,
   WriterPanelState,
+  ArticleStyleProfile,
+  AuthorStyleProfile,
+  AuthorStyleTerm,
 } from "./types"
 
 // ── constants ────────────────────────────────────────────────
@@ -88,6 +91,103 @@ function modelOptions(models: WriterModel[]) {
   return models.map((m) => String(m.id || "").trim()).filter(Boolean).map((id) => ({ value: id, label: id }))
 }
 
+function listItems(value: string[] | undefined, limit = 12): string[] {
+  return Array.isArray(value) ? value.map((item) => String(item || "").trim()).filter(Boolean).slice(0, limit) : []
+}
+
+function hasArticleStyleProfile(profile: ArticleStyleProfile | undefined): boolean {
+  return Boolean(profile && (
+    profile.styleLabel || profile.summary || profile.storyContent || profile.coreExpression ||
+    profile.genreType || listItems(profile.keywords).length
+  ))
+}
+
+function countTerms(items: string[], maxItems = 10): AuthorStyleTerm[] {
+  const counts = new Map<string, number>()
+  const firstSeen = new Map<string, number>()
+  let order = 0
+  items.forEach((item) => {
+    const text = String(item || "").trim()
+    if (!text || text === "-") return
+    if (!firstSeen.has(text)) firstSeen.set(text, order++)
+    counts.set(text, (counts.get(text) || 0) + 1)
+  })
+  return [...counts.entries()]
+    .sort((a, b) => b[1] - a[1] || (firstSeen.get(a[0]) || 0) - (firstSeen.get(b[0]) || 0))
+    .slice(0, maxItems)
+    .map(([text, count]) => ({ text, count }))
+}
+
+function collectProfileField(profiles: ArticleStyleProfile[], field: keyof ArticleStyleProfile): string[] {
+  return profiles.flatMap((profile) => listItems(profile[field] as string[] | undefined, 12))
+}
+
+function collectTextField(profiles: ArticleStyleProfile[], field: keyof ArticleStyleProfile): string[] {
+  return profiles.map((profile) => String(profile[field] || "").trim()).filter(Boolean)
+}
+
+function buildAuthorStyleProfile(history: HistoryEntry[], currentProfile: ArticleStyleProfile | undefined): AuthorStyleProfile | null {
+  const profiles = collectAuthorStyleSamples(history, currentProfile)
+  if (!profiles.length) return null
+
+  const styleLabels = countTerms(collectTextField(profiles, "styleLabel"), 6)
+  const genres = countTerms(collectTextField(profiles, "genreType"), 6)
+  const languageHabits = countTerms(collectProfileField(profiles, "languageHabits"), 10)
+  const sentenceStructures = countTerms(collectProfileField(profiles, "sentenceStructures"), 10)
+  const imageryPreferences = countTerms(collectProfileField(profiles, "imageryPreferences"), 10)
+  const keywords = countTerms(collectProfileField(profiles, "keywords"), 12)
+  const rhythms = countTerms(collectTextField(profiles, "expressionRhythm"), 5)
+  const coreExpressions = countTerms(collectTextField(profiles, "coreExpression"), 5)
+  return {
+    sampleCount: profiles.length,
+    source: "local",
+    dominantStyle: styleLabels[0]?.text || "尚未形成稳定标签",
+    dominantGenre: genres[0]?.text || "题材样本不足",
+    styleLabels,
+    genres,
+    languageHabits,
+    sentenceStructures,
+    imageryPreferences,
+    keywords,
+    rhythms,
+    coreExpressions,
+  }
+}
+
+function collectAuthorStyleSamples(history: HistoryEntry[], currentProfile: ArticleStyleProfile | undefined): ArticleStyleProfile[] {
+  const profiles: ArticleStyleProfile[] = []
+  const seen = new Set<string>()
+  const profileKey = (profile: ArticleStyleProfile) => [
+    profile.styleLabel,
+    profile.genreType,
+    profile.summary,
+    profile.storyContent,
+    profile.coreExpression,
+    listItems(profile.keywords, 6).join("|"),
+  ].join("::")
+  const addProfile = (profile: ArticleStyleProfile | undefined) => {
+    if (!hasArticleStyleProfile(profile)) return
+    const finalKey = profileKey(profile as ArticleStyleProfile)
+    if (seen.has(finalKey)) return
+    seen.add(finalKey)
+    profiles.push(profile as ArticleStyleProfile)
+  }
+  history.forEach((entry) => addProfile(entry.analysis?.articleStyleProfile))
+  addProfile(currentProfile)
+  return profiles
+}
+
+function authorStyleSignature(profiles: ArticleStyleProfile[]): string {
+  return profiles.map((profile) => [
+    profile.styleLabel,
+    profile.genreType,
+    profile.summary,
+    profile.storyContent,
+    profile.coreExpression,
+    listItems(profile.keywords, 8).join("|"),
+  ].join("::")).join("##")
+}
+
 // ── main component ──────────────────────────────────────────
 
 export default function WriterPowerAnalysisPanel(props: PluginSurfaceProps<WriterPanelState>) {
@@ -128,6 +228,16 @@ export default function WriterPowerAnalysisPanel(props: PluginSurfaceProps<Write
   const useNekoModel = platformMode === "neko"
   const isCustomMode = platformMode === "custom"
   const effectiveModel = compact(modelInputMode === "custom" ? customModel : selectedModel, "gpt-4.1-mini")
+  const authorStyleSamples = collectAuthorStyleSamples(history, analysis?.articleStyleProfile)
+  const localAuthorStyleProfile = buildAuthorStyleProfile(history, analysis?.articleStyleProfile)
+  const authorStyleSampleSignature = authorStyleSignature(authorStyleSamples)
+  const [modelAuthorStyleProfile, setModelAuthorStyleProfile] = props.useLocalState<AuthorStyleProfile | null>("writerModelAuthorStyleProfile", null)
+  const [modelAuthorStyleSignature, setModelAuthorStyleSignature] = props.useLocalState("writerModelAuthorStyleSignature", "")
+  const [authorStyleSynthesizing, setAuthorStyleSynthesizing] = props.useLocalState("writerAuthorStyleSynthesizing", false)
+  const [authorStyleSynthesisError, setAuthorStyleSynthesisError] = props.useLocalState("writerAuthorStyleSynthesisError", "")
+  const authorStyleProfile = modelAuthorStyleSignature === authorStyleSampleSignature && modelAuthorStyleProfile
+    ? modelAuthorStyleProfile
+    : localAuthorStyleProfile
 
   // ── actions ──────────────────────────────────────────────
 
@@ -275,6 +385,43 @@ export default function WriterPowerAnalysisPanel(props: PluginSurfaceProps<Write
 
   useEffect(() => { switchPlatform("neko"); loadSavedPresets() }, [])
 
+  useEffect(() => {
+    let cancelled = false
+    const synthesize = async () => {
+      if (authorStyleSamples.length === 0 || !authorStyleSampleSignature) {
+        setModelAuthorStyleProfile(null)
+        setModelAuthorStyleSignature("")
+        setAuthorStyleSynthesisError("")
+        return
+      }
+      if (modelAuthorStyleSignature === authorStyleSampleSignature && modelAuthorStyleProfile) return
+      setAuthorStyleSynthesizing(true)
+      setAuthorStyleSynthesisError("")
+      try {
+        const payload = unwrapActionResult<AuthorStyleProfile>(await props.api.call("synthesize_author_style_profile", {
+          profiles: authorStyleSamples,
+          model: effectiveModel,
+          api_key: apiKey.trim(),
+          base_url: baseUrl.trim(),
+          model_list_path: modelListPath.trim(),
+          use_neko_model: useNekoModel,
+        }))
+        if (cancelled) return
+        setModelAuthorStyleProfile({ ...payload, source: payload.source || "model" })
+        setModelAuthorStyleSignature(authorStyleSampleSignature)
+      } catch (error) {
+        if (cancelled) return
+        setAuthorStyleSynthesisError(normalizeError(error))
+        setModelAuthorStyleProfile(null)
+        setModelAuthorStyleSignature("")
+      } finally {
+        if (!cancelled) setAuthorStyleSynthesizing(false)
+      }
+    }
+    void synthesize()
+    return () => { cancelled = true }
+  }, [authorStyleSampleSignature, effectiveModel, apiKey, baseUrl, modelListPath, useNekoModel])
+
   // poll queued/running analysis tasks
   useEffect(() => {
     if (runningTasks.length === 0) {
@@ -321,7 +468,8 @@ export default function WriterPowerAnalysisPanel(props: PluginSurfaceProps<Write
     articleText, effectiveModel, customModel, selectedModel, modelInputMode,
     platformMode, savedPlatforms, selectedMode, platformName, apiKey, baseUrl, modelListPath,
     models, modelSource, loadingModels, analyzing, analyzingStatus, runningTasks, activeTab,
-    errorText, result, history, nekoModelInfo, loadingNekoModel, modelList,
+    errorText, result, history, authorStyleProfile, nekoModelInfo, loadingNekoModel, modelList,
+    authorStyleSynthesizing, authorStyleSynthesisError,
     useNekoModel, isCustomMode, analysis, dimensions, articleChars, selectedModeMeta,
     setArticleText, setSelectedModel, setCustomModel, setModelInputMode,
     setSelectedMode, setPlatformName, setApiKey, setBaseUrl, setModelListPath, setActiveTab, setErrorText,

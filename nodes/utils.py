@@ -449,6 +449,15 @@ def normalize_model_string_list(value: Any, limit: int) -> list[str]:
     return [item for item in items if item][:limit]
 
 
+def normalize_bounded_string_list(value: Any, limit: int, max_chars: int) -> list[str]:
+    """Normalize a string list while preserving longer explanatory items."""
+
+    if not isinstance(value, list):
+        return []
+    items = [safe_str(item)[:max_chars] for item in value]
+    return [item for item in items if item][:limit]
+
+
 def normalize_style_profile(value: Any) -> dict[str, Any] | None:
     """Normalize an Ink Battles-style article feature profile."""
 
@@ -457,13 +466,13 @@ def normalize_style_profile(value: Any) -> dict[str, Any] | None:
 
     legacy_core = value.get("spiritualCore") or value.get("emotionalTendency") or ""
     profile: dict[str, Any] = {
-        "storyContent": safe_str(value.get("storyContent") or value.get("narrativeMode"))[:400],
-        "coreExpression": safe_str(value.get("coreExpression") or legacy_core)[:400],
-        "genreType": safe_str(value.get("genreType"))[:160],
-        "languageHabits": normalize_model_string_list(value.get("languageHabits"), 8),
-        "sentenceStructures": normalize_model_string_list(value.get("sentenceStructures"), 8),
-        "expressionRhythm": safe_str(value.get("expressionRhythm"))[:300],
-        "imageryPreferences": normalize_model_string_list(value.get("imageryPreferences"), 8),
+        "storyContent": safe_str(value.get("storyContent") or value.get("narrativeMode"))[:700],
+        "coreExpression": safe_str(value.get("coreExpression") or legacy_core)[:700],
+        "genreType": safe_str(value.get("genreType"))[:400],
+        "languageHabits": normalize_bounded_string_list(value.get("languageHabits"), 8, 260),
+        "sentenceStructures": normalize_bounded_string_list(value.get("sentenceStructures"), 8, 260),
+        "expressionRhythm": safe_str(value.get("expressionRhythm"))[:700],
+        "imageryPreferences": normalize_bounded_string_list(value.get("imageryPreferences"), 8, 260),
         "styleLabel": safe_str(value.get("styleLabel"))[:80],
         "summary": safe_str(value.get("summary"))[:700],
         "keywords": normalize_model_string_list(value.get("keywords"), 12),
@@ -718,6 +727,14 @@ def normalize_analysis(parsed: dict[str, Any]) -> dict[str, Any]:
 def format_report_markdown(analysis: dict[str, Any]) -> str:
     """Format a concise Chinese markdown report for chat display."""
 
+    def extend_profile_list(label: str, value: Any) -> None:
+        items = normalize_model_string_list(value, 8)
+        lines.append(f"{label}：")
+        if items:
+            lines.extend(f"- {item}" for item in items)
+        else:
+            lines.append("-")
+
     lines = [
         f"# {analysis.get('title') or '作家战力分析'}",
         "",
@@ -742,9 +759,13 @@ def format_report_markdown(analysis: dict[str, Any]) -> str:
                 f"故事内容：{safe_str(profile.get('storyContent'), '-')}",
                 f"核心表达：{safe_str(profile.get('coreExpression'), '-')}",
                 f"表达节奏：{safe_str(profile.get('expressionRhythm'), '-')}",
-                f"语言习惯：{' / '.join(normalize_model_string_list(profile.get('languageHabits'), 8)) or '-'}",
-                f"句式结构：{' / '.join(normalize_model_string_list(profile.get('sentenceStructures'), 8)) or '-'}",
-                f"意象偏好：{' / '.join(normalize_model_string_list(profile.get('imageryPreferences'), 8)) or '-'}",
+            ]
+        )
+        extend_profile_list("语言习惯", profile.get("languageHabits"))
+        extend_profile_list("句式结构", profile.get("sentenceStructures"))
+        extend_profile_list("意象偏好", profile.get("imageryPreferences"))
+        lines.extend(
+            [
                 f"关键词：{' / '.join(normalize_model_string_list(profile.get('keywords'), 12)) or '-'}",
                 safe_str(profile.get("summary")),
             ]

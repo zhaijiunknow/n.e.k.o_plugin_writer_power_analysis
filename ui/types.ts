@@ -96,6 +96,33 @@ export type HistoryEntry = AnalyzeResult & {
   articleChars: number
 }
 
+export type AuthorStyleTerm = {
+  text: string
+  count: number
+}
+
+export type AuthorStyleProfile = {
+  sampleCount: number
+  source?: string
+  dominantStyle: string
+  dominantGenre: string
+  summary?: string
+  styleLabels: AuthorStyleTerm[]
+  genres: AuthorStyleTerm[]
+  languageHabits: AuthorStyleTerm[]
+  sentenceStructures: AuthorStyleTerm[]
+  imageryPreferences: AuthorStyleTerm[]
+  keywords: AuthorStyleTerm[]
+  rhythms: AuthorStyleTerm[]
+  coreExpressions: AuthorStyleTerm[]
+  topicPreferences?: string[]
+  narrativeTendencies?: string[]
+  strengths?: string[]
+  risks?: string[]
+  evolutionAdvice?: string[]
+  confidence?: number
+}
+
 export type RunningTask = {
   task_id: string
   status: string
@@ -155,6 +182,9 @@ export interface TabSharedProps {
   errorText: string
   result: AnalyzeResult | null
   history: HistoryEntry[]
+  authorStyleProfile: AuthorStyleProfile | null
+  authorStyleSynthesizing: boolean
+  authorStyleSynthesisError: string
   nekoModelInfo: NekoModelInfo | null
   loadingNekoModel: boolean
   modelList: WriterModel[]

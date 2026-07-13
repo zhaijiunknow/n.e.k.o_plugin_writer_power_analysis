@@ -57,6 +57,7 @@ class WriterAnalysisPipelineNode(LoggedNode):
                     article_text=validated.article_text,
                     temperature=cfg.temperature,
                     json_mode=cfg.json_mode,
+                    timeout_seconds=cfg.timeout_seconds,
                 )
                 analysis = self.response_parse.run(upstream)
                 report = self.report_format.run(analysis)

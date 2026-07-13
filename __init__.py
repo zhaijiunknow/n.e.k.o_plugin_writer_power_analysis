@@ -32,8 +32,8 @@ from .platform_store import PlatformPresetStore
 from .task_queue import AnalysisTaskQueue
 
 
-PUSH_ARTICLE_MAX_CHARS = 8000
 PUSH_FIELD_MAX_CHARS = 4000
+PUSH_HIGHLIGHTS_MAX_CHARS = 2500
 PUSH_IMPROVEMENTS_MAX_CHARS = 5000
 
 
@@ -67,23 +67,6 @@ def _as_text(value: Any, default: str = "") -> str:
     return text or default
 
 
-def _truncate_middle(text: str, max_chars: int) -> tuple[str, bool]:
-    """Keep the beginning and ending when long text is pushed into chat context."""
-
-    text = _as_text(text)
-    if len(text) <= max_chars:
-        return text, False
-    head_chars = max_chars // 2
-    tail_chars = max_chars - head_chars
-    omitted = len(text) - head_chars - tail_chars
-    excerpt = (
-        f"{text[:head_chars]}\n\n"
-        f"[...中间已省略 {omitted} 字，完整原文仍保留在分析任务结果中...]\n\n"
-        f"{text[-tail_chars:]}"
-    )
-    return excerpt, True
-
-
 def _format_improvements(value: Any) -> str:
     """Render model improvement suggestions as a stable numbered list."""
 
@@ -98,6 +81,34 @@ def _format_improvements(value: Any) -> str:
                 lines.append(f"{index}. {text}")
         return "\n".join(lines) if lines else "模型未返回改进指导。"
     return _as_text(value, "模型未返回改进指导。")
+
+
+def _format_sentence_highlights(value: Any) -> tuple[str, int]:
+    """Render extracted sentence highlights for Neko's proactive response."""
+
+    if not isinstance(value, list):
+        return "模型未提取到可推送的文句高光。", 0
+
+    lines: list[str] = []
+    seen: set[str] = set()
+    for item in value:
+        if isinstance(item, dict):
+            content = _as_text(item.get("content"))
+            reason = _as_text(item.get("reason"))
+        else:
+            content = _as_text(item)
+            reason = ""
+        normalized_content = "".join(content.split())
+        if not normalized_content or normalized_content in seen:
+            continue
+        seen.add(normalized_content)
+        index = len(lines) + 1
+        if reason:
+            lines.append(f"{index}. “{content}”\n   鉴赏：{reason}")
+        else:
+            lines.append(f"{index}. “{content}”")
+
+    return ("\n".join(lines) if lines else "模型未提取到可推送的文句高光。", len(lines))
 
 
 @neko_plugin
@@ -366,7 +377,6 @@ class WriterPowerAnalysisPlugin(NekoPluginBase):
                 if isinstance(result, dict):
                     self._push_analysis_completed(
                         task=task,
-                        article_text=article_text,
                         result=result,
                         target_lanlan=target_lanlan,
                     )
@@ -404,6 +414,55 @@ class WriterPowerAnalysisPlugin(NekoPluginBase):
             return Err(SdkError(f"未找到任务: {task_id}"))
         return Ok(task)
 
+    @ui.action(id="synthesize_author_style_profile", label="统合作者文风画像", group="analyze", order=30, refresh_context=False)
+    @plugin_entry(
+        id="synthesize_author_style_profile",
+        name="统合作者文风画像",
+        description="根据历史作品文风画像样本，调用模型生成作者级文风画像。",
+        input_schema={
+            "type": "object",
+            "properties": {
+                "profiles": {"type": "array", "description": "历史作品 articleStyleProfile 数组"},
+                "model": {"type": "string", "description": "模型 id；留空使用配置 default_model"},
+                "api_key": {"type": "string", "description": "临时 API key，优先于插件配置"},
+                "base_url": {"type": "string", "description": "临时 base URL"},
+                "model_list_path": {"type": "string", "description": "模型列表路径，默认 /v1/models"},
+                "use_neko_model": {"type": "boolean", "description": "使用 Neko 当前对话模型", "default": False},
+            },
+            "required": ["profiles"],
+        },
+        llm_result_fields=["sampleCount", "dominantStyle", "dominantGenre", "summary", "source"],
+        timeout=180.0,
+    )
+    async def synthesize_author_style_profile(
+        self,
+        profiles: list[dict[str, Any]] | None = None,
+        model: str = "",
+        api_key: str = "",
+        base_url: str = "",
+        model_list_path: str = "",
+        use_neko_model: bool = False,
+        **_,
+    ):
+        """Synthesize an author style profile from historical article style profiles."""
+
+        try:
+            result = await self._service.synthesize_author_style_profile(
+                self._cfg,
+                profiles=profiles or [],
+                model=model,
+                api_key=api_key,
+                base_url=base_url,
+                model_list_path=model_list_path,
+                use_neko_model=use_neko_model,
+            )
+            return Ok(result)
+        except WriterAnalysisError as exc:
+            return Err(SdkError(str(exc)))
+        except Exception as exc:
+            self.logger.warning("Author style synthesis failed: {}", exc)
+            return Err(SdkError(f"统合作者文风画像失败: {exc}"))
+
     def _resolve_target_lanlan(self, kwargs: dict[str, Any]) -> str | None:
         """Best-effort target resolution for proactive push messages."""
 
@@ -421,7 +480,6 @@ class WriterPowerAnalysisPlugin(NekoPluginBase):
         self,
         *,
         task: dict[str, Any],
-        article_text: str,
         result: dict[str, Any],
         target_lanlan: str | None = None,
     ) -> None:
@@ -433,23 +491,21 @@ class WriterPowerAnalysisPlugin(NekoPluginBase):
 
         analysis = result.get("analysis") if isinstance(result.get("analysis"), dict) else {}
         improvements = _format_improvements(analysis.get("improvements"))
-        article_excerpt, article_truncated = _truncate_middle(article_text, PUSH_ARTICLE_MAX_CHARS)
+        sentence_highlights, highlight_count = _format_sentence_highlights(analysis.get("excellentSentences"))
         overall_assessment = _as_text(analysis.get("overallAssessment"), "模型未返回综合评价。")
 
+        if len(sentence_highlights) > PUSH_HIGHLIGHTS_MAX_CHARS:
+            sentence_highlights = sentence_highlights[:PUSH_HIGHLIGHTS_MAX_CHARS] + "\n[...文句高光过长，已截断...]"
         if len(overall_assessment) > PUSH_FIELD_MAX_CHARS:
             overall_assessment = overall_assessment[:PUSH_FIELD_MAX_CHARS] + "\n[...综合评价过长，已截断...]"
         if len(improvements) > PUSH_IMPROVEMENTS_MAX_CHARS:
             improvements = improvements[:PUSH_IMPROVEMENTS_MAX_CHARS] + "\n[...改进指导过长，已截断...]"
 
-        article_header = "原文"
-        if article_truncated:
-            article_header = f"原文（首尾节选；全文 {len(article_text)} 字，因上下文长度已压缩）"
-
         message = (
-            "作家战力分析已经完成。请你根据下面三个模块，像 Neko 一样对用户作出自然回应："
-            "先简短说明分析完成，再结合综合评价和改进指导给出有帮助的反馈；"
-            "不要逐字复述原文，不要说你看不到报告。\n\n"
-            f"【{article_header}】\n{article_excerpt or '（空）'}\n\n"
+            "请你根据下面三个模块，像 Neko 一样对用户作出自然回应："
+            "结合文句高光、综合评价和改进指导给出有帮助的反馈；"
+            "可以把文句高光原句原文复述，不要说你看不到报告。\n\n"
+            f"【文句高光】\n{sentence_highlights}\n\n"
             f"【综合评价】\n{overall_assessment}\n\n"
             f"【改进指导】\n{improvements}"
         )
@@ -463,7 +519,7 @@ class WriterPowerAnalysisPlugin(NekoPluginBase):
             "overallScore": result.get("overallScore"),
             "ratingTag": result.get("ratingTag"),
             "title": analysis.get("title"),
-            "article_truncated": article_truncated,
+            "highlight_count": highlight_count,
         }
         if target_lanlan:
             metadata["target_lanlan"] = target_lanlan
@@ -478,8 +534,8 @@ class WriterPowerAnalysisPlugin(NekoPluginBase):
             target_lanlan=target_lanlan,
         )
         self.logger.info(
-            "Writer analysis completion pushed: task_id={}, target_lanlan={}, article_truncated={}",
+            "Writer analysis completion pushed: task_id={}, target_lanlan={}, highlight_count={}",
             task.get("task_id"),
             target_lanlan or "",
-            article_truncated,
+            highlight_count,
         )

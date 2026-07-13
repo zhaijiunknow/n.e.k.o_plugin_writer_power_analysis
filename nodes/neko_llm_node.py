@@ -27,6 +27,7 @@ class NekoLlmRequestNode(LoggedNode):
         article_text: str,
         temperature: float,
         json_mode: bool,
+        timeout_seconds: float,
     ) -> UpstreamResponse:
         """Resolve Neko's model config and call via HTTP."""
 
@@ -67,7 +68,7 @@ class NekoLlmRequestNode(LoggedNode):
             last_text = ""
             last_endpoint = base_url
             last_status = 0
-            async with httpx.AsyncClient(timeout=120.0, follow_redirects=True) as client:
+            async with httpx.AsyncClient(timeout=timeout_seconds, follow_redirects=True) as client:
                 for endpoint in endpoints:
                     body = to_gemini_payload(payload) if endpoint.kind == "gemini" else payload
                     resp = await client.post(
@@ -109,6 +110,12 @@ class NekoLlmRequestNode(LoggedNode):
             return result
         except WriterAnalysisError:
             raise
+        except httpx.TimeoutException as exc:
+            self._fail(started, exc, model=model)
+            raise WriterAnalysisError(
+                f"Neko 内置模型调用超时（{timeout_seconds:.0f} 秒）。"
+                "长文本分析耗时较长，请换更快的模型、缩短原文，或关闭「跟随 Neko」后使用更稳定的分析平台。"
+            ) from exc
         except Exception as exc:
             self._fail(started, exc, model=model)
             raise WriterAnalysisError(f"Neko 内置模型调用失败: {exc}") from exc

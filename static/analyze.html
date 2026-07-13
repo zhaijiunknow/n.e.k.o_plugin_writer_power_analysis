@@ -7,7 +7,7 @@
 <meta http-equiv="Expires" content="0">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>开始分析 · 作家战力分析</title>
-<link rel="stylesheet" href="style.css?v=3">
+<link rel="stylesheet" href="style.css?v=4">
 </head>
 <body>
 <div id="toast" class="toast"></div>
@@ -102,7 +102,7 @@
 
 </div>
 
-<script src="app.js?v=4"></script>
+<script src="app.js?v=6"></script>
 <script>
 // ── State ──────────────────────────────────────────────────
 let platformMode = LS.get('platformMode', 'neko');
@@ -446,6 +446,34 @@ function saveToHistory(result, text) {
   LS.set('history', history);
 }
 
+function currentAuthorStyleRequestOptions() {
+  return {
+    model: getCurrentModel(),
+    api_key: ($q('#apiKey').value || '').trim(),
+    base_url: ($q('#baseUrl').value || '').trim(),
+    model_list_path: ($q('#modelListPath').value || '').trim() || '/v1/models',
+    use_neko_model: platformMode === 'neko',
+    timeoutMs: 120000,
+  };
+}
+
+async function refreshModelAuthorStyleProfile(articleProfile) {
+  const box = document.getElementById('authorStyleProfileBox');
+  if (!box || !hasArticleStyleProfile(articleProfile)) return;
+  const fallbackHtml = box.innerHTML;
+  const localProfile = buildAuthorStyleProfile(articleProfile);
+  if (localProfile) {
+    box.innerHTML = renderAuthorStyleProfileData(localProfile, '模型统合中');
+  }
+  try {
+    const profile = await synthesizeAuthorStyleProfile(articleProfile, currentAuthorStyleRequestOptions());
+    if (profile) box.innerHTML = renderAuthorStyleProfileData(profile, '模型统合');
+  } catch (e) {
+    console.warn('[authorStyleProfile] synthesis failed:', e.message);
+    box.innerHTML = fallbackHtml || box.innerHTML;
+  }
+}
+
 // ── Results ────────────────────────────────────────────────
 function displayResult(r) {
   if (!r || typeof r !== 'object') {
@@ -518,6 +546,7 @@ function displayResult(r) {
   html += '</div>';
   document.getElementById('resultsArea').innerHTML = html;
   document.getElementById('resultsArea').scrollIntoView({ behavior: 'smooth' });
+  refreshModelAuthorStyleProfile(a.articleStyleProfile).catch(e => console.warn('[authorStyleProfile] refresh failed:', e.message));
 }
 
 function clearForm() {
