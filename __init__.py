@@ -32,6 +32,11 @@ from .platform_store import PlatformPresetStore
 from .task_queue import AnalysisTaskQueue
 
 
+PUSH_ARTICLE_MAX_CHARS = 8000
+PUSH_FIELD_MAX_CHARS = 4000
+PUSH_IMPROVEMENTS_MAX_CHARS = 5000
+
+
 def _emit_node_log(logger: Any, event: str, node: str, **metadata: Any) -> None:
     """Write a lifecycle node log without leaking sensitive values."""
 
@@ -50,6 +55,49 @@ def _emit_node_log(logger: Any, event: str, node: str, **metadata: Any) -> None:
         logger.info(message)
     except Exception:
         return
+
+
+def _as_text(value: Any, default: str = "") -> str:
+    """Convert plugin result values to compact text for proactive context."""
+
+    if value is None:
+        return default
+    text = value if isinstance(value, str) else str(value)
+    text = text.strip()
+    return text or default
+
+
+def _truncate_middle(text: str, max_chars: int) -> tuple[str, bool]:
+    """Keep the beginning and ending when long text is pushed into chat context."""
+
+    text = _as_text(text)
+    if len(text) <= max_chars:
+        return text, False
+    head_chars = max_chars // 2
+    tail_chars = max_chars - head_chars
+    omitted = len(text) - head_chars - tail_chars
+    excerpt = (
+        f"{text[:head_chars]}\n\n"
+        f"[...中间已省略 {omitted} 字，完整原文仍保留在分析任务结果中...]\n\n"
+        f"{text[-tail_chars:]}"
+    )
+    return excerpt, True
+
+
+def _format_improvements(value: Any) -> str:
+    """Render model improvement suggestions as a stable numbered list."""
+
+    if isinstance(value, list):
+        lines: list[str] = []
+        for index, item in enumerate(value, start=1):
+            if isinstance(item, dict):
+                text = _as_text(item.get("text") or item.get("desc") or item.get("description"))
+            else:
+                text = _as_text(item)
+            if text:
+                lines.append(f"{index}. {text}")
+        return "\n".join(lines) if lines else "模型未返回改进指导。"
+    return _as_text(value, "模型未返回改进指导。")
 
 
 @neko_plugin
@@ -295,7 +343,7 @@ class WriterPowerAnalysisPlugin(NekoPluginBase):
         api_key: str = "",
         base_url: str = "",
         use_neko_model: bool = False,
-        **_,
+        **kwargs,
     ):
         """Queue an analysis task, return task_id immediately."""
 
@@ -311,11 +359,24 @@ class WriterPowerAnalysisPlugin(NekoPluginBase):
             )
 
         try:
+            target_lanlan = self._resolve_target_lanlan(kwargs)
+
+            def _on_done(task: dict[str, Any]) -> None:
+                result = task.get("result")
+                if isinstance(result, dict):
+                    self._push_analysis_completed(
+                        task=task,
+                        article_text=article_text,
+                        result=result,
+                        target_lanlan=target_lanlan,
+                    )
+
             task_id = await self._task_queue.submit(
                 runner=_runner,
                 model=model or ("neko" if use_neko_model else "custom"),
                 mode=mode,
                 article_chars=len(article_text),
+                on_done=_on_done,
             )
             return Ok({"task_id": task_id, "status": "queued"})
         except Exception as exc:
@@ -342,3 +403,83 @@ class WriterPowerAnalysisPlugin(NekoPluginBase):
         if task is None:
             return Err(SdkError(f"未找到任务: {task_id}"))
         return Ok(task)
+
+    def _resolve_target_lanlan(self, kwargs: dict[str, Any]) -> str | None:
+        """Best-effort target resolution for proactive push messages."""
+
+        ctx_obj = kwargs.get("_ctx")
+        if isinstance(ctx_obj, dict):
+            lanlan_name = ctx_obj.get("lanlan_name")
+            if isinstance(lanlan_name, str) and lanlan_name.strip():
+                return lanlan_name.strip()
+        current_lanlan = getattr(self.ctx, "_current_lanlan", None)
+        if isinstance(current_lanlan, str) and current_lanlan.strip():
+            return current_lanlan.strip()
+        return None
+
+    def _push_analysis_completed(
+        self,
+        *,
+        task: dict[str, Any],
+        article_text: str,
+        result: dict[str, Any],
+        target_lanlan: str | None = None,
+    ) -> None:
+        """Push analysis completion context to Neko so it can respond naturally."""
+
+        if not hasattr(self.ctx, "push_message"):
+            self.logger.warning("Writer analysis completion push skipped: ctx has no push_message")
+            return
+
+        analysis = result.get("analysis") if isinstance(result.get("analysis"), dict) else {}
+        improvements = _format_improvements(analysis.get("improvements"))
+        article_excerpt, article_truncated = _truncate_middle(article_text, PUSH_ARTICLE_MAX_CHARS)
+        overall_assessment = _as_text(analysis.get("overallAssessment"), "模型未返回综合评价。")
+
+        if len(overall_assessment) > PUSH_FIELD_MAX_CHARS:
+            overall_assessment = overall_assessment[:PUSH_FIELD_MAX_CHARS] + "\n[...综合评价过长，已截断...]"
+        if len(improvements) > PUSH_IMPROVEMENTS_MAX_CHARS:
+            improvements = improvements[:PUSH_IMPROVEMENTS_MAX_CHARS] + "\n[...改进指导过长，已截断...]"
+
+        article_header = "原文"
+        if article_truncated:
+            article_header = f"原文（首尾节选；全文 {len(article_text)} 字，因上下文长度已压缩）"
+
+        message = (
+            "作家战力分析已经完成。请你根据下面三个模块，像 Neko 一样对用户作出自然回应："
+            "先简短说明分析完成，再结合综合评价和改进指导给出有帮助的反馈；"
+            "不要逐字复述原文，不要说你看不到报告。\n\n"
+            f"【{article_header}】\n{article_excerpt or '（空）'}\n\n"
+            f"【综合评价】\n{overall_assessment}\n\n"
+            f"【改进指导】\n{improvements}"
+        )
+
+        metadata = {
+            "event_type": "writer_analysis_completed",
+            "task_id": task.get("task_id"),
+            "mode": task.get("mode"),
+            "article_chars": task.get("article_chars"),
+            "model": result.get("model") or task.get("model"),
+            "overallScore": result.get("overallScore"),
+            "ratingTag": result.get("ratingTag"),
+            "title": analysis.get("title"),
+            "article_truncated": article_truncated,
+        }
+        if target_lanlan:
+            metadata["target_lanlan"] = target_lanlan
+
+        self.ctx.push_message(
+            source="writer_power_analysis",
+            visibility=[],
+            ai_behavior="respond",
+            parts=[{"type": "text", "text": message}],
+            priority=6,
+            metadata=metadata,
+            target_lanlan=target_lanlan,
+        )
+        self.logger.info(
+            "Writer analysis completion pushed: task_id={}, target_lanlan={}, article_truncated={}",
+            task.get("task_id"),
+            target_lanlan or "",
+            article_truncated,
+        )

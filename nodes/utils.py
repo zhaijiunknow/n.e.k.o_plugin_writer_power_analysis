@@ -225,15 +225,114 @@ def fix_control_characters(json_text: str) -> str:
     return "".join(out)
 
 
+def escape_json_string_content(value: str) -> str:
+    """Escape raw quotes/control chars while preserving existing escapes."""
+
+    out: list[str] = []
+    index = 0
+    while index < len(value):
+        char = value[index]
+        if char == "\\":
+            if index + 1 < len(value):
+                out.append(char)
+                out.append(value[index + 1])
+                index += 2
+                continue
+            out.append("\\\\")
+            index += 1
+            continue
+        if char == '"':
+            out.append('\\"')
+            index += 1
+            continue
+        code = ord(char)
+        if code < 0x20:
+            if char == "\n":
+                out.append("\\n")
+            elif char == "\r":
+                out.append("\\r")
+            elif char == "\t":
+                out.append("\\t")
+            else:
+                out.append(f"\\u{code:04x}")
+            index += 1
+            continue
+        out.append(char)
+        index += 1
+    return "".join(out)
+
+
+def find_likely_json_string_end(text: str, start: int) -> int:
+    """Find a string terminator likely followed by a JSON separator."""
+
+    escaped = False
+    for index in range(start, len(text)):
+        char = text[index]
+        if escaped:
+            escaped = False
+            continue
+        if char == "\\":
+            escaped = True
+            continue
+        if char != '"':
+            continue
+        lookahead = index + 1
+        while lookahead < len(text) and text[lookahead].isspace():
+            lookahead += 1
+        if lookahead >= len(text) or text[lookahead] in ",}":
+            return index
+    return -1
+
+
+def repair_mermaid_code_strings(json_text: str) -> str:
+    """Repair common LLM JSON breakage in Mermaid code string values.
+
+    Models often emit Mermaid as ``A["节点"]`` inside a JSON string without
+    escaping those inner quotes. That makes the whole JSON invalid even though
+    the rest of the report is usable.
+    """
+
+    marker = re.compile(r'"code"\s*:\s*"')
+    out: list[str] = []
+    cursor = 0
+    while True:
+        match = marker.search(json_text, cursor)
+        if not match:
+            out.append(json_text[cursor:])
+            break
+        content_start = match.end()
+        content_end = find_likely_json_string_end(json_text, content_start)
+        if content_end == -1:
+            out.append(json_text[cursor:])
+            break
+        out.append(json_text[cursor:content_start])
+        out.append(escape_json_string_content(json_text[content_start:content_end]))
+        cursor = content_end
+    return "".join(out)
+
+
 def parse_model_json(raw: str) -> dict[str, Any]:
     """Parse model JSON with small recovery steps for common LLM issues."""
 
     json_text = extract_json_object(raw)
-    try:
+    candidates = [
+        json_text,
+        fix_control_characters(TRAILING_COMMA_RE.sub(r"\1", json_text)),
+    ]
+    candidates.append(repair_mermaid_code_strings(candidates[-1]))
+
+    last_error: json.JSONDecodeError | None = None
+    parsed: Any = None
+    for candidate in candidates:
+        try:
+            parsed = json.loads(candidate)
+            break
+        except json.JSONDecodeError as exc:
+            last_error = exc
+    else:
+        if last_error is not None:
+            raise last_error
         parsed = json.loads(json_text)
-    except json.JSONDecodeError:
-        fixed = fix_control_characters(TRAILING_COMMA_RE.sub(r"\1", json_text))
-        parsed = json.loads(fixed)
     if not isinstance(parsed, dict):
         raise ValueError("模型返回的 JSON 顶层不是对象")
     return parsed
@@ -341,6 +440,135 @@ def dimension_score(value: Any) -> float:
         return float(match.group(0)) if match else 0.0
 
 
+def normalize_model_string_list(value: Any, limit: int) -> list[str]:
+    """Normalize a model output value into a bounded string list."""
+
+    if not isinstance(value, list):
+        return []
+    items = [safe_str(item) for item in value]
+    return [item for item in items if item][:limit]
+
+
+def normalize_style_profile(value: Any) -> dict[str, Any] | None:
+    """Normalize an Ink Battles-style article feature profile."""
+
+    if not isinstance(value, dict):
+        return None
+
+    legacy_core = value.get("spiritualCore") or value.get("emotionalTendency") or ""
+    profile: dict[str, Any] = {
+        "storyContent": safe_str(value.get("storyContent") or value.get("narrativeMode"))[:400],
+        "coreExpression": safe_str(value.get("coreExpression") or legacy_core)[:400],
+        "genreType": safe_str(value.get("genreType"))[:160],
+        "languageHabits": normalize_model_string_list(value.get("languageHabits"), 8),
+        "sentenceStructures": normalize_model_string_list(value.get("sentenceStructures"), 8),
+        "expressionRhythm": safe_str(value.get("expressionRhythm"))[:300],
+        "imageryPreferences": normalize_model_string_list(value.get("imageryPreferences"), 8),
+        "styleLabel": safe_str(value.get("styleLabel"))[:80],
+        "summary": safe_str(value.get("summary"))[:700],
+        "keywords": normalize_model_string_list(value.get("keywords"), 12),
+    }
+
+    for optional_key in ("emotionalTendency", "narrativeMode", "spiritualCore"):
+        optional_value = safe_str(value.get(optional_key))
+        if optional_value:
+            profile[optional_key] = optional_value[:300]
+
+    has_core_fields = any(
+        [
+            profile["storyContent"],
+            profile["coreExpression"],
+            profile["genreType"],
+            profile["styleLabel"],
+            profile["summary"],
+            profile["keywords"],
+        ]
+    )
+    return profile if has_core_fields else None
+
+
+def normalize_excellent_sentences(value: Any) -> list[dict[str, str]]:
+    """Keep only valid, deduplicated excellent sentence candidates."""
+
+    if not isinstance(value, list):
+        return []
+    seen: set[str] = set()
+    sentences: list[dict[str, str]] = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        content = safe_str(item.get("content"))[:65]
+        reason = safe_str(item.get("reason"))[:240]
+        normalized_content = re.sub(r"\s+", "", content)
+        if not normalized_content or not reason or normalized_content in seen:
+            continue
+        seen.add(normalized_content)
+        sentences.append({"content": content, "reason": reason})
+        if len(sentences) >= 2:
+            break
+    return sentences
+
+
+def normalize_author_matches(value: Any) -> list[dict[str, Any]]:
+    """Normalize model-generated author style references."""
+
+    if not isinstance(value, list):
+        return []
+    matches: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        name = safe_str(item.get("name"))[:80]
+        style_label = safe_str(item.get("styleLabel"))[:120]
+        description = safe_str(item.get("description"))[:500]
+        reasons = normalize_model_string_list(item.get("reasons"), 4)
+        key = name.lower()
+        if not name or not style_label or not description or not reasons or key in seen:
+            continue
+        seen.add(key)
+        normalized: dict[str, Any] = {
+            "name": name,
+            "styleLabel": style_label,
+            "description": description,
+            "confidence": safe_float(item.get("confidence"), 0.0, 0.0, 100.0),
+            "reasons": reasons,
+        }
+        source = safe_str(item.get("source"))
+        if source in {"library", "model"}:
+            normalized["source"] = source
+        if item.get("similarity") is not None:
+            normalized["similarity"] = safe_float(item.get("similarity"), 0.0, 0.0, 1.0)
+        matches.append(normalized)
+        if len(matches) >= 3:
+            break
+    return matches
+
+
+def normalize_mermaid_diagrams(value: Any) -> list[dict[str, str]]:
+    """Normalize Mermaid diagram objects for UI rendering."""
+
+    if not isinstance(value, list):
+        return []
+    diagrams: list[dict[str, str]] = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        code = safe_str(item.get("code")).replace("\r", ";").replace("\n", ";")
+        if not code:
+            continue
+        diagrams.append(
+            {
+                "type": safe_str(item.get("type"), "graph")[:40],
+                "title": safe_str(item.get("title"), "分析图表")[:120],
+                "code": code,
+            }
+        )
+        if len(diagrams) >= 3:
+            break
+    return diagrams
+
+
 def calculate_final_score(dimensions: list[dict[str, Any]]) -> float:
     """Calculate the Ink Battles backend final score from dimensions."""
 
@@ -349,7 +577,10 @@ def calculate_final_score(dimensions: list[dict[str, Any]]) -> float:
         for item in dimensions
         if "经典" not in safe_str(item.get("name")) and "新锐" not in safe_str(item.get("name"))
     ]
-    base_score = sum(dimension_score(item.get("score")) for item in base_dimensions)
+    count_above_35 = sum(1 for item in base_dimensions if dimension_score(item.get("score")) > 3.5)
+    count_above_40 = sum(1 for item in base_dimensions if dimension_score(item.get("score")) > 4.0)
+    use_floor = count_above_35 >= 6 or count_above_40 >= 3
+    base_score = sum(max(3.0, dimension_score(item.get("score"))) if use_floor else dimension_score(item.get("score")) for item in base_dimensions)
     classicity = next(
         (dimension_score(item.get("score")) for item in dimensions if "经典" in safe_str(item.get("name"))),
         1.0,
@@ -360,6 +591,31 @@ def calculate_final_score(dimensions: list[dict[str, Any]]) -> float:
     )
     final_score = base_score * (classicity or 1.0) * (novelty or 1.0)
     return round(final_score, 2) if final_score == final_score else 0.0
+
+
+def calculate_rating_tag(dimensions: list[dict[str, Any]]) -> str:
+    """Calculate the quick rating tag from classicity and novelty weights."""
+
+    classicity = next(
+        (dimension_score(item.get("score")) for item in dimensions if "经典" in safe_str(item.get("name"))),
+        1.0,
+    )
+    novelty = next(
+        (dimension_score(item.get("score")) for item in dimensions if "新锐" in safe_str(item.get("name"))),
+        1.0,
+    )
+    product = (classicity or 1.0) * (novelty or 1.0)
+    if product <= 0.8:
+        return "🐟 臭鱼烂虾 / 早该弃坑"
+    if product <= 1.1:
+        return "🥱 平庸之作 / 初级模仿者"
+    if product <= 1.5:
+        return "🌱 初露头角 / 潜力股"
+    if product <= 1.9:
+        return "🔥 市场热门 / 惹眼新秀"
+    if product <= 2.4:
+        return "🏆 时代作家 / 高产佳作"
+    return "🪙 永垂不朽 / 文学圣徒"
 
 
 def build_openai_payload(
@@ -436,27 +692,27 @@ def normalize_analysis(parsed: dict[str, Any]) -> dict[str, Any]:
 
     def string_list(key: str) -> list[str]:
         value = parsed.get(key)
-        if not isinstance(value, list):
-            return []
-        return [safe_str(item) for item in value if safe_str(item)]
+        return normalize_model_string_list(value, 12)
 
-    return {
-        "overallScore": round(float(parsed["overallScore"]), 2)
-        if isinstance(parsed.get("overallScore"), (int, float))
-        else calculate_final_score(dimensions),
+    article_style_profile = normalize_style_profile(parsed.get("articleStyleProfile"))
+    analysis = {
+        "overallScore": calculate_final_score(dimensions),
         "overallAssessment": safe_str(parsed.get("overallAssessment"), "模型未返回综合评价。"),
         "title": safe_str(parsed.get("title"), "未命名评价"),
-        "ratingTag": safe_str(parsed.get("ratingTag"), "本地基础分析"),
+        "ratingTag": calculate_rating_tag(dimensions),
         "finalTag": safe_str(parsed.get("finalTag"), "可作为基础创作参考"),
         "summary": safe_str(parsed.get("summary"), "模型未返回作品概述。"),
         "tags": string_list("tags"),
         "dimensions": dimensions,
         "strengths": string_list("strengths"),
         "improvements": string_list("improvements"),
-        "excellentSentences": parsed.get("excellentSentences") if isinstance(parsed.get("excellentSentences"), list) else [],
-        "authorMatches": parsed.get("authorMatches") if isinstance(parsed.get("authorMatches"), list) else [],
-        "mermaid_diagrams": parsed.get("mermaid_diagrams") if isinstance(parsed.get("mermaid_diagrams"), list) else [],
+        "excellentSentences": normalize_excellent_sentences(parsed.get("excellentSentences")),
+        "authorMatches": normalize_author_matches(parsed.get("authorMatches")),
+        "mermaid_diagrams": normalize_mermaid_diagrams(parsed.get("mermaid_diagrams")),
     }
+    if article_style_profile:
+        analysis["articleStyleProfile"] = article_style_profile
+    return analysis
 
 
 def format_report_markdown(analysis: dict[str, Any]) -> str:
@@ -473,9 +729,28 @@ def format_report_markdown(analysis: dict[str, Any]) -> str:
         "",
         "## 综合评价",
         safe_str(analysis.get("overallAssessment")),
-        "",
-        "## 维度评分",
     ]
+
+    profile = analysis.get("articleStyleProfile")
+    if isinstance(profile, dict):
+        lines.extend(
+            [
+                "",
+                "## 当前作品文风画像",
+                f"风格标签：{safe_str(profile.get('styleLabel'), '-')}",
+                f"体裁类型：{safe_str(profile.get('genreType'), '-')}",
+                f"故事内容：{safe_str(profile.get('storyContent'), '-')}",
+                f"核心表达：{safe_str(profile.get('coreExpression'), '-')}",
+                f"表达节奏：{safe_str(profile.get('expressionRhythm'), '-')}",
+                f"语言习惯：{' / '.join(normalize_model_string_list(profile.get('languageHabits'), 8)) or '-'}",
+                f"句式结构：{' / '.join(normalize_model_string_list(profile.get('sentenceStructures'), 8)) or '-'}",
+                f"意象偏好：{' / '.join(normalize_model_string_list(profile.get('imageryPreferences'), 8)) or '-'}",
+                f"关键词：{' / '.join(normalize_model_string_list(profile.get('keywords'), 12)) or '-'}",
+                safe_str(profile.get("summary")),
+            ]
+        )
+
+    lines.extend(["", "## 维度评分"])
     for dimension in analysis.get("dimensions", []):
         if not isinstance(dimension, dict):
             continue

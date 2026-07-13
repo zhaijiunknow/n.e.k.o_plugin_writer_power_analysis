@@ -13,6 +13,9 @@ import uuid
 from typing import Any, Callable, Coroutine
 
 
+AnalysisDoneCallback = Callable[[dict[str, Any]], None]
+
+
 class AnalysisTask:
     """One queued / running / completed analysis."""
 
@@ -80,6 +83,7 @@ class AnalysisTaskQueue:
         model: str = "",
         mode: str = "standard",
         article_chars: int = 0,
+        on_done: AnalysisDoneCallback | None = None,
     ) -> str:
         """Enqueue an analysis, start it in the background, return task_id."""
         task_id = uuid.uuid4().hex[:12]
@@ -98,7 +102,7 @@ class AnalysisTaskQueue:
                     del self._tasks[old_id]
 
         # fire background (tracked so we can cancel on shutdown)
-        coro = self._run(task_id, runner)
+        coro = self._run(task_id, runner, on_done)
         asyncio_task = asyncio.create_task(coro)
         self._running.add(asyncio_task)
         asyncio_task.add_done_callback(self._running.discard)
@@ -108,6 +112,7 @@ class AnalysisTaskQueue:
         self,
         task_id: str,
         runner: Callable[[], Coroutine[Any, Any, dict[str, Any]]],
+        on_done: AnalysisDoneCallback | None = None,
     ) -> None:
         task = self._tasks.get(task_id)
         if task is None:
@@ -121,7 +126,13 @@ class AnalysisTaskQueue:
                 result = await runner()
                 task.result = result
                 task.status = "done"
+                task.finished_at = time.time()
                 self._logger.info("Analysis task {} completed", task_id)
+                if on_done is not None:
+                    try:
+                        on_done(task.to_dict())
+                    except Exception as exc:
+                        self._logger.warning("Analysis task {} completion callback failed: {}", task_id, exc)
             except asyncio.CancelledError:
                 task.status = "error"
                 task.error = "任务已取消"
@@ -131,7 +142,8 @@ class AnalysisTaskQueue:
                 task.status = "error"
                 self._logger.warning("Analysis task {} failed: {}", task_id, exc)
             finally:
-                task.finished_at = time.time()
+                if task.finished_at is None:
+                    task.finished_at = time.time()
 
     async def get(self, task_id: str) -> dict[str, Any] | None:
         """Poll for task status / result."""

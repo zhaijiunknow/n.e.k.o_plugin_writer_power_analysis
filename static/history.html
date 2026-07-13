@@ -50,6 +50,7 @@ function renderHistory() {
         <span>${esc(date)}</span>
         <span class="badge ${SCORE_CLASS[scoreTone(entry.overallScore)]}">${entry.overallScore ?? '-'} 分</span>
         <span>${esc(entry.model || '-')}</span>
+        <span>${esc(entry.modeLabel || entry.mode || '-')}</span>
         <span>${entry.articleChars || 0} 字</span>
       </div>
       <div class="title">${esc(entry.analysis?.title || '未命名分析')}</div>
@@ -72,6 +73,7 @@ function showDetail(idx) {
   let html = `<div class="card"><div class="card-title">${esc(a.title || '未命名分析')}</div>`;
   html += `<div class="stats">
     <div class="stat"><div class="stat-label">综合评分</div><div class="stat-value"><span class="badge ${SCORE_CLASS[scoreTone(entry.overallScore)]}">${entry.overallScore ?? '-'}</span></div></div>
+    <div class="stat"><div class="stat-label">评分模式</div><div class="stat-value" style="font-size:14px;">${esc(entry.modeLabel || entry.mode || '-')}</div></div>
     <div class="stat"><div class="stat-label">最终标签</div><div class="stat-value" style="font-size:14px;">${esc(a.finalTag || '-')}</div></div>
     <div class="stat"><div class="stat-label">模型</div><div class="stat-value" style="font-size:14px;">${esc(entry.model || '-')}</div></div>
     <div class="stat"><div class="stat-label">字数</div><div class="stat-value">${entry.articleChars || 0}</div></div>
@@ -79,6 +81,7 @@ function showDetail(idx) {
 
   html += '<div class="row"><div class="col-2 detail-section"><h3>作品概述</h3><p style="font-size:13px;color:#475569;">' + esc(a.summary || entry.summary || '-') + '</p></div>';
   html += '<div class="col-2 detail-section"><h3>综合评价</h3><p style="font-size:13px;color:#475569;">' + esc(a.overallAssessment || '-') + '</p></div></div>';
+  html += renderVisualReport(a);
 
   if (dims.length) {
     html += '<div class="detail-section"><h3>维度评分</h3>';

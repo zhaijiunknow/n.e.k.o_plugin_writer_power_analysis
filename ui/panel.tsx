@@ -19,6 +19,7 @@ import type {
   ModelListResult,
   ModeOption,
   NekoModelInfo,
+  RunningTask,
   SavedPlatform,
   TabSharedProps,
   WriterModel,
@@ -101,6 +102,7 @@ export default function WriterPowerAnalysisPanel(props: PluginSurfaceProps<Write
   const [platformMode, setPlatformMode] = props.useLocalState<string>("writerPlatformMode", "neko")
   const [savedPlatforms, setSavedPlatforms] = props.useLocalState<SavedPlatform[]>("writerSavedPlatforms", [])
   const [selectedMode, setSelectedMode] = props.useLocalState("writerSelectedMode", "standard")
+  const [platformName, setPlatformName] = props.useLocalState("writerPlatformName", "")
   const [apiKey, setApiKey] = props.useLocalState("writerApiKey", "")
   const [baseUrl, setBaseUrl] = props.useLocalState("writerBaseUrl", compact(safeState.base_url, ""))
   const [modelListPath, setModelListPath] = props.useLocalState("writerModelListPath", compact(safeState.model_list_path, "/v1/models"))
@@ -108,8 +110,8 @@ export default function WriterPowerAnalysisPanel(props: PluginSurfaceProps<Write
   const [modelSource, setModelSource] = props.useLocalState("writerModelSource", "builtin_fallback")
   const [loadingModels, setLoadingModels] = props.useLocalState("writerLoadingModels", false)
   const [analyzing, setAnalyzing] = props.useLocalState("writerAnalyzing", false)
-  const [analyzingTaskId, setAnalyzingTaskId] = props.useLocalState("writerAnalyzingTaskId", "")
   const [analyzingStatus, setAnalyzingStatus] = props.useLocalState("writerAnalyzingStatus", "")
+  const [runningTasks, setRunningTasks] = props.useLocalState<RunningTask[]>("writerRunningTasks", [])
   const [activeTab, setActiveTab] = props.useLocalState("writerActiveTab", "analyze")
   const [errorText, setErrorText] = props.useLocalState("writerError", "")
   const [result, setResult] = props.useLocalState<AnalyzeResult | null>("writerResult", null)
@@ -130,12 +132,24 @@ export default function WriterPowerAnalysisPanel(props: PluginSurfaceProps<Write
   // ── actions ──────────────────────────────────────────────
 
   function applyPlatformPreset(preset: SavedPlatform) {
+    setPlatformName(preset.label || "")
     setBaseUrl(preset.baseUrl)
     setModelListPath(preset.modelListPath || "/v1/models")
     if (preset.model) {
       setSelectedModel(preset.model)
       setCustomModel(preset.model)
+      if (!modelList.some((m) => m.id === preset.model)) setModelInputMode("custom")
     }
+  }
+
+  function clearCustomPlatformForm() {
+    setPlatformName("")
+    setBaseUrl("")
+    setApiKey("")
+    setModelListPath("/v1/models")
+    setCustomModel("")
+    setSelectedModel(String(modelList[0]?.id || "gpt-4.1-mini"))
+    setModelInputMode("list")
   }
 
   async function loadModels() {
@@ -149,7 +163,7 @@ export default function WriterPowerAnalysisPanel(props: PluginSurfaceProps<Write
       setModels(nextModels)
       setModelSource(compact(payload.source, "builtin_fallback"))
       const current = String(selectedModel || "")
-      if (!nextModels.some((m) => m.id === current)) setSelectedModel(String(nextModels[0]?.id || "gpt-4.1-mini"))
+      if (modelInputMode === "list" && !nextModels.some((m) => m.id === current)) setSelectedModel(String(nextModels[0]?.id || "gpt-4.1-mini"))
       if (payload.message) toast.info(payload.message)
     } catch (error) {
       setErrorText(normalizeError(error))
@@ -170,7 +184,9 @@ export default function WriterPowerAnalysisPanel(props: PluginSurfaceProps<Write
   function switchPlatform(mode: string) {
     setPlatformMode(mode)
     if (mode === "neko" && !nekoModelInfo) loadNekoModel()
-    if (mode !== "neko" && mode !== "custom") {
+    if (mode === "custom") {
+      clearCustomPlatformForm()
+    } else if (mode !== "neko") {
       const preset = savedPlatforms.find((p) => p.id === mode)
       if (preset) applyPlatformPreset(preset)
     }
@@ -179,19 +195,20 @@ export default function WriterPowerAnalysisPanel(props: PluginSurfaceProps<Write
   async function savePlatformPreset() {
     const url = baseUrl.trim()
     if (!url) { toast.error("请先填写 Base URL"); return }
-    let hostname = url
-    try { hostname = new URL(url).hostname } catch (_) { /* raw */ }
+    const label = platformName.trim() || "自定义平台"
     const id = "preset-" + Date.now()
-    const preset: SavedPlatform = { id, label: hostname, baseUrl: url, modelListPath: modelListPath.trim() || "/v1/models", model: effectiveModel }
+    const preset: SavedPlatform = { id, label, baseUrl: url, modelListPath: modelListPath.trim() || "/v1/models", model: effectiveModel }
     try {
       const payload = unwrapActionResult<{ presets: SavedPlatform[] }>(await props.api.call("save_platform_preset", preset))
       if (Array.isArray(payload.presets)) setSavedPlatforms(payload.presets)
-      setPlatformMode(id)
+      setPlatformMode("custom")
+      clearCustomPlatformForm()
       toast.success(`已保存预设: ${preset.label}`)
     } catch (_) {
       const next = [...savedPlatforms.filter((p) => p.baseUrl !== preset.baseUrl), preset]
       setSavedPlatforms(next)
-      setPlatformMode(id)
+      setPlatformMode("custom")
+      clearCustomPlatformForm()
       toast.success(`已保存预设（仅本地）: ${preset.label}`)
     }
   }
@@ -211,15 +228,17 @@ export default function WriterPowerAnalysisPanel(props: PluginSurfaceProps<Write
     setAnalyzingStatus("正在提交分析任务...")
     setErrorText("")
     try {
+      const mode = selectedMode
+      const modeLabel = selectedModeMeta?.label || selectedMode
       const submitResult = unwrapActionResult<{ task_id: string; status: string }>(
         await props.api.call("analyze_text", {
-          article_text: text, mode: selectedMode, model: effectiveModel,
+          article_text: text, mode, model: effectiveModel,
           api_key: apiKey.trim(), base_url: baseUrl.trim(),
           model_list_path: modelListPath.trim(), use_neko_model: useNekoModel,
         })
       )
-      setAnalyzingTaskId(submitResult.task_id)
       setAnalyzingStatus("分析中...")
+      setRunningTasks([{ task_id: submitResult.task_id, status: submitResult.status || "queued", mode, modeLabel, model: effectiveModel, articleText: text, articleChars }, ...runningTasks])
       toast.success("任务已提交，后台分析中")
     } catch (error) {
       setErrorText(normalizeError(error))
@@ -231,16 +250,16 @@ export default function WriterPowerAnalysisPanel(props: PluginSurfaceProps<Write
 
   function reset() {
     setArticleText(""); setResult(null); setErrorText("")
-    setAnalyzingTaskId(""); setAnalyzingStatus(""); setAnalyzing(false)
   }
 
   function clearHistory() { setHistory([]); toast.success("历史记录已清空") }
   function removeHistoryEntry(id: string) { setHistory(history.filter((h) => h.id !== id)) }
   function loadHistoryEntry(entry: HistoryEntry) {
+    if (entry.mode) setSelectedMode(entry.mode)
     setResult({
       analysis: entry.analysis, report_markdown: entry.report_markdown,
       overallScore: entry.overallScore, ratingTag: entry.ratingTag,
-      summary: entry.summary, model: entry.model, endpoint: entry.endpoint,
+      summary: entry.summary, model: entry.model, mode: entry.mode, modeLabel: entry.modeLabel, endpoint: entry.endpoint,
       fallback_used: entry.fallback_used,
     })
   }
@@ -256,49 +275,56 @@ export default function WriterPowerAnalysisPanel(props: PluginSurfaceProps<Write
 
   useEffect(() => { switchPlatform("neko"); loadSavedPresets() }, [])
 
-  // poll analysis task
+  // poll queued/running analysis tasks
   useEffect(() => {
-    if (!analyzingTaskId || !analyzing) return
+    if (runningTasks.length === 0) {
+      if (analyzing) setAnalyzing(false)
+      if (analyzingStatus) setAnalyzingStatus("")
+      return
+    }
     let cancelled = false
-    const poll = async () => {
+    const pollOne = async (task: RunningTask) => {
       if (cancelled) return
       try {
         const s = unwrapActionResult<{ task_id: string; status: string; result?: AnalyzeResult | null; error?: string | null }>(
-          await props.api.call("get_analysis_status", { task_id: analyzingTaskId })
+          await props.api.call("get_analysis_status", { task_id: task.task_id })
         )
         if (cancelled) return
         if (s.status === "done" && s.result) {
-          setResult(s.result)
-          setHistory([{ ...s.result, id: "hist-" + Date.now(), time: new Date().toLocaleString(), articleChars }, ...history])
-          setAnalyzing(false); setAnalyzingTaskId(""); setAnalyzingStatus("")
+          const resultWithMode = { ...s.result, mode: task.mode, modeLabel: task.modeLabel }
+          setResult(resultWithMode)
+          setHistory([{ ...resultWithMode, id: "hist-" + Date.now(), time: new Date().toLocaleString(), articleChars: task.articleChars }, ...history])
+          setRunningTasks(runningTasks.filter((item) => item.task_id !== task.task_id))
           setActiveTab("history")
           toast.success("分析完成")
         } else if (s.status === "error") {
           setErrorText(s.error || "分析失败")
-          setAnalyzing(false); setAnalyzingTaskId(""); setAnalyzingStatus("")
+          setRunningTasks(runningTasks.filter((item) => item.task_id !== task.task_id))
           toast.error(s.error || "分析失败")
         } else {
-          setAnalyzingStatus(s.status === "running" ? "分析中..." : "排队中...")
-          setTimeout(() => { if (!cancelled) poll() }, 3000)
+          setRunningTasks(runningTasks.map((item) => item.task_id === task.task_id ? { ...item, status: s.status || item.status } : item))
         }
-      } catch (_) {
-        if (!cancelled) { setAnalyzingStatus("轮询失败，重试中..."); setTimeout(() => { if (!cancelled) poll() }, 5000) }
-      }
+      } catch (_) { /* retry on next tick */ }
     }
-    poll()
+    runningTasks.forEach((task) => { void pollOne(task) })
+    setAnalyzing(true)
+    setAnalyzingStatus(runningTasks.some((task) => task.status === "running") ? "分析中..." : "排队中...")
+    setTimeout(() => {
+      if (!cancelled) setRunningTasks([...runningTasks])
+    }, 3000)
     return () => { cancelled = true }
-  }, [analyzingTaskId, analyzing])
+  }, [runningTasks])
 
   // ── shared props ──────────────────────────────────────────
 
   const shared: TabSharedProps = {
     articleText, effectiveModel, customModel, selectedModel, modelInputMode,
-    platformMode, savedPlatforms, selectedMode, apiKey, baseUrl, modelListPath,
-    models, modelSource, loadingModels, analyzing, analyzingStatus, activeTab,
+    platformMode, savedPlatforms, selectedMode, platformName, apiKey, baseUrl, modelListPath,
+    models, modelSource, loadingModels, analyzing, analyzingStatus, runningTasks, activeTab,
     errorText, result, history, nekoModelInfo, loadingNekoModel, modelList,
     useNekoModel, isCustomMode, analysis, dimensions, articleChars, selectedModeMeta,
     setArticleText, setSelectedModel, setCustomModel, setModelInputMode,
-    setSelectedMode, setApiKey, setBaseUrl, setModelListPath, setActiveTab, setErrorText,
+    setSelectedMode, setPlatformName, setApiKey, setBaseUrl, setModelListPath, setActiveTab, setErrorText,
     switchPlatform, savePlatformPreset, removePlatformPreset,
     loadModels, loadNekoModel, analyze, reset,
     clearHistory, removeHistoryEntry, loadHistoryEntry,

@@ -11,6 +11,41 @@ export type WriterDimension = {
   description?: string
 }
 
+export type MermaidDiagram = {
+  type?: string
+  title?: string
+  code?: string
+}
+
+export type ExcellentSentence = {
+  content?: string
+  reason?: string
+}
+
+export type AuthorMatch = {
+  name?: string
+  styleLabel?: string
+  description?: string
+  confidence?: number
+  reasons?: string[]
+}
+
+export type ArticleStyleProfile = {
+  storyContent?: string
+  coreExpression?: string
+  genreType?: string
+  languageHabits?: string[]
+  sentenceStructures?: string[]
+  expressionRhythm?: string
+  imageryPreferences?: string[]
+  emotionalTendency?: string
+  narrativeMode?: string
+  spiritualCore?: string
+  styleLabel?: string
+  summary?: string
+  keywords?: string[]
+}
+
 export type WriterAnalysis = {
   overallScore?: number
   overallAssessment?: string
@@ -22,6 +57,10 @@ export type WriterAnalysis = {
   dimensions?: WriterDimension[]
   strengths?: string[]
   improvements?: string[]
+  excellentSentences?: ExcellentSentence[]
+  articleStyleProfile?: ArticleStyleProfile
+  authorMatches?: AuthorMatch[]
+  mermaid_diagrams?: MermaidDiagram[]
 }
 
 export type AnalyzeResult = {
@@ -31,6 +70,8 @@ export type AnalyzeResult = {
   ratingTag?: string
   summary?: string
   model?: string
+  mode?: string
+  modeLabel?: string
   endpoint?: string
   fallback_used?: boolean
 }
@@ -52,6 +93,16 @@ export type NekoModelInfo = {
 export type HistoryEntry = AnalyzeResult & {
   id: string
   time: string
+  articleChars: number
+}
+
+export type RunningTask = {
+  task_id: string
+  status: string
+  mode: string
+  modeLabel: string
+  model: string
+  articleText: string
   articleChars: number
 }
 
@@ -90,6 +141,7 @@ export interface TabSharedProps {
   platformMode: string
   savedPlatforms: SavedPlatform[]
   selectedMode: string
+  platformName: string
   apiKey: string
   baseUrl: string
   modelListPath: string
@@ -98,6 +150,7 @@ export interface TabSharedProps {
   loadingModels: boolean
   analyzing: boolean
   analyzingStatus: string
+  runningTasks: RunningTask[]
   activeTab: string
   errorText: string
   result: AnalyzeResult | null
@@ -118,6 +171,7 @@ export interface TabSharedProps {
   setCustomModel: (v: string) => string
   setModelInputMode: (v: ModelInputMode) => ModelInputMode
   setSelectedMode: (v: string) => string
+  setPlatformName: (v: string) => string
   setApiKey: (v: string) => string
   setBaseUrl: (v: string) => string
   setModelListPath: (v: string) => string

@@ -68,6 +68,7 @@ body {
 .badge-gray { background: #f1f5f9; color: #64748b; }
 
 /* Platform toggle */
+#platform-toggles { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .toggle-row { display: flex; align-items: center; gap: 10px; padding: 8px 0; }
 .toggle-row input[type="radio"] { display: none; }
 .toggle-label { padding: 8px 16px; border-radius: 8px; border: 2px solid #e2e8f0; cursor: pointer;
@@ -93,6 +94,10 @@ body {
 /* Progress */
 .progress-bar { height: 8px; background: #e2e8f0; border-radius: 4px; overflow: hidden; margin: 8px 0; }
 .progress-fill { height: 100%; background: #6366f1; border-radius: 4px; transition: width .5s; }
+.task-list { display: grid; gap: 6px; margin-top: 10px; }
+.task-item { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 8px 10px; border: 1px solid #e2e8f0;
+  border-radius: 8px; background: #f8fafc; font-size: 12px; color: #475569; }
+.task-id { margin-left: auto; color: #94a3b8; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
 
 /* Tabs */
 .tabs { display: flex; gap: 0; margin-bottom: 20px; border-bottom: 2px solid #e2e8f0; }
@@ -126,3 +131,47 @@ body {
 .dimension-score { width: 50px; font-size: 13px; text-align: right; flex-shrink: 0; }
 .dimension-bar { flex: 1; height: 8px; background: #e2e8f0; border-radius: 4px; overflow: hidden; }
 .dimension-fill { height: 100%; background: #6366f1; border-radius: 4px; transition: width .3s; }
+
+/* Visual report */
+.muted { font-size: 13px; color: #94a3b8; }
+.section-title { font-size: 13px; font-weight: 700; color: #334155; margin-bottom: 10px; }
+.visual-grid { display: grid; grid-template-columns: minmax(280px, 1fr) minmax(260px, 1fr); gap: 18px; align-items: start; }
+.radar-wrap { width: 100%; overflow: hidden; }
+.radar-svg { width: 100%; max-width: 430px; aspect-ratio: 1; display: block; margin: 0 auto; }
+.radar-grid { fill: none; stroke: #e2e8f0; stroke-width: 1; }
+.radar-axis { stroke: #e2e8f0; stroke-width: 1; }
+.radar-area { fill: rgba(99,102,241,.18); stroke: none; }
+.radar-line { fill: none; stroke: #6366f1; stroke-width: 2.5; }
+.radar-point { fill: #4f46e5; stroke: #fff; stroke-width: 1.5; }
+.radar-label { font-size: 11px; fill: #475569; font-weight: 700; }
+.portrait-summary { background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 10px; padding: 12px; margin-bottom: 12px; }
+.portrait-summary p { font-size: 13px; color: #475569; margin-bottom: 8px; }
+.portrait-profile { display: grid; gap: 10px; }
+.style-profile-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
+.style-label { font-size: 14px; font-weight: 800; color: #1e293b; }
+.style-genre { font-size: 11px; font-weight: 700; color: #0f766e; background: #ccfbf1; border-radius: 999px; padding: 2px 8px; }
+.style-profile-grid { display: grid; grid-template-columns: 1fr; gap: 8px; }
+.style-profile-grid div { display: grid; gap: 4px; }
+.style-profile-grid b { font-size: 11px; color: #64748b; }
+.style-profile-grid span { font-size: 12px; color: #334155; }
+.style-keywords { padding-top: 2px; }
+.tag-row { display: flex; gap: 6px; flex-wrap: wrap; }
+.tag { display: inline-flex; align-items: center; min-height: 22px; padding: 2px 8px; border-radius: 999px; background: #eef2ff; color: #4f46e5; font-size: 11px; font-weight: 700; }
+.profile-bars { display: grid; gap: 10px; }
+.profile-head { display: flex; justify-content: space-between; gap: 12px; font-size: 12px; font-weight: 700; color: #334155; }
+.profile-track { height: 8px; background: #e2e8f0; border-radius: 999px; overflow: hidden; margin: 4px 0; }
+.profile-fill { height: 100%; background: linear-gradient(90deg, #14b8a6, #6366f1); border-radius: 999px; }
+.profile-note { font-size: 11px; color: #94a3b8; }
+.diagram-card { background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 10px; padding: 14px; overflow-x: auto; }
+.diagram-title { font-size: 12px; font-weight: 700; color: #475569; margin-bottom: 10px; }
+.graph-svg { min-width: 620px; width: 100%; height: auto; display: block; }
+.graph-edge { stroke: #64748b; stroke-width: 1.6; }
+.graph-edge-label { fill: #64748b; font-size: 11px; font-weight: 700; paint-order: stroke; stroke: #f8fafc; stroke-width: 3px; }
+.graph-node { fill: #fff; stroke: #cbd5e1; stroke-width: 1.4; }
+.graph-node-label { fill: #334155; font-size: 12px; font-weight: 700; }
+.diagram-code { background: #0f172a; color: #e2e8f0; padding: 12px; border-radius: 8px; font-size: 12px; white-space: pre-wrap; }
+
+@media (max-width: 720px) {
+  .visual-grid { grid-template-columns: 1fr; }
+  .graph-svg { min-width: 540px; }
+}

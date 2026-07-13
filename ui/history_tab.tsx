@@ -18,10 +18,11 @@ export function HistoryTab(p: TabSharedProps) {
           {p.history.map((entry) => (
             <Card key={entry.id} title={entry.analysis?.title || "未命名分析"}>
               <Stack>
-                <Grid cols={4}>
+                <Grid cols={5}>
                   <Text>{entry.time}</Text>
                   <StatusBadge tone={p.scoreTone(entry.overallScore) as any}>{entry.overallScore ?? "-"} 分</StatusBadge>
                   <Text>{entry.model || "-"}</Text>
+                  <Text>{entry.modeLabel || p.modes.find((m) => m.id === entry.mode)?.label || entry.mode || "-"}</Text>
                   <Text>{entry.articleChars} 字</Text>
                 </Grid>
                 <Text>{entry.ratingTag || "-"}</Text>
