@@ -488,7 +488,7 @@ export default function WriterPowerAnalysisPanel(props: PluginSurfaceProps<Write
   ]
 
   return (
-    <Page title="作家战力分析" subtitle="基于 Ink Battles 提示词链路的 AI 写作评分">
+    <Page title="文本分析" subtitle="基于 Ink Battles 提示词链路的 AI 写作评分">
       <Toolbar>
         <ToolbarGroup>
           <StatusBadge tone={useNekoModel ? "success" : (apiKey ? "success" : "warning")}>

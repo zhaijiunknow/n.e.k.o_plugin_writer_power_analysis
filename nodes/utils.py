@@ -736,7 +736,7 @@ def format_report_markdown(analysis: dict[str, Any]) -> str:
             lines.append("-")
 
     lines = [
-        f"# {analysis.get('title') or '作家战力分析'}",
+        f"# {analysis.get('title') or '文本分析'}",
         "",
         f"综合战力评分：{analysis.get('overallScore')}/100",
         f"评级：{analysis.get('ratingTag')} / {analysis.get('finalTag')}",

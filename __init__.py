@@ -173,7 +173,7 @@ class WriterPowerAnalysisPlugin(NekoPluginBase):
         await self._reload_config()
         return Ok({"status": "reloaded"})
 
-    @ui.context(id="writer_power_analysis", title="作家战力分析")
+    @ui.context(id="writer_power_analysis", title="文本分析")
     async def get_dashboard_ui_context(self) -> dict[str, Any]:
         """Provide panel state."""
         status = self._service.status(self._cfg)
@@ -202,8 +202,8 @@ class WriterPowerAnalysisPlugin(NekoPluginBase):
     @ui.action(id="status", label="刷新状态", group="info", order=10, refresh_context=True)
     @plugin_entry(
         id="status",
-        name="作家战力分析状态",
-        description="查看作家战力分析插件配置状态。不会返回 API key。",
+        name="文本分析状态",
+        description="查看文本分析插件配置状态。不会返回 API key。",
         llm_result_fields=["status", "base_url", "default_model", "has_api_key"],
     )
     async def status(self, **kwargs):
@@ -325,7 +325,7 @@ class WriterPowerAnalysisPlugin(NekoPluginBase):
     @ui.action(id="analyze_text", label="开始战力分析", icon="🔍", group="analyze", order=10, refresh_context=True)
     @plugin_entry(
         id="analyze_text",
-        name="作家战力分析",
+        name="文本分析",
         description="提交作品正文到后台分析队列，立即返回 task_id，前端轮询 get_analysis_status 获取结果。",
         input_schema={
             "type": "object",
